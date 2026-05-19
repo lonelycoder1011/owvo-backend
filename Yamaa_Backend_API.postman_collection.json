@@ -1,0 +1,1761 @@
+{
+	"info": {
+		"_postman_id": "yamaa-backend-api-collection",
+		"name": "Yamaa Backend API",
+		"description": "Complete API collection for Yamaa car washing backend service",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "http://localhost:5000/api/v1",
+			"type": "string"
+		},
+		{
+			"key": "token",
+			"value": "",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Auth",
+			"item": [
+				{
+					"name": "Register",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"John Doe\",\n  \"email\": \"john@example.com\",\n  \"password\": \"password123\",\n  \"phone\": \"+1234567890\",\n  \"role\": \"user\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/register",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "register"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"var jsonData = pm.response.json();",
+									"if (jsonData.data && jsonData.data.token) {",
+									"    pm.collectionVariables.set(\"token\", jsonData.data.token);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"john@example.com\",\n  \"password\": \"password123\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/login",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "login"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Verify OTP",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"john@example.com\",\n  \"otp\": \"123456\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/verify",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "verify"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Resend OTP",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"john@example.com\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/resend-otp",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "resend-otp"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Forget Password",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"john@example.com\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/forget",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "forget"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Reset Password",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"email\": \"john@example.com\",\n  \"otp\": \"123456\",\n  \"newPassword\": \"newpassword123\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/reset-password",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "reset-password"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Change Password",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"currentPassword\": \"password123\",\n  \"newPassword\": \"newpassword123\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/change-password",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "change-password"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Refresh Token",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"refreshToken\": \"your-refresh-token\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/auth/refresh-token",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "refresh-token"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Logout",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/auth/logout",
+							"host": ["{{baseUrl}}"],
+							"path": ["auth", "logout"]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "User",
+			"item": [
+				{
+					"name": "Get Profile",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/user/profile",
+							"host": ["{{baseUrl}}"],
+							"path": ["user", "profile"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update Profile",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"John Doe Updated\",\n  \"phone\": \"+1234567890\",\n  \"address\": \"123 Main St\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/user/profile",
+							"host": ["{{baseUrl}}"],
+							"path": ["user", "profile"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update Identity Info",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "idType",
+									"value": "passport",
+									"type": "text"
+								},
+								{
+									"key": "idNumber",
+									"value": "AB123456",
+									"type": "text"
+								},
+								{
+									"key": "idFiles",
+									"type": "file",
+									"src": []
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseUrl}}/user/identity",
+							"host": ["{{baseUrl}}"],
+							"path": ["user", "identity"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Upload Identity ID File",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "idFile",
+									"type": "file",
+									"src": []
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseUrl}}/user/identity/upload-id",
+							"host": ["{{baseUrl}}"],
+							"path": ["user", "identity", "upload-id"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Upload Photo",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "photo",
+									"type": "file",
+									"src": []
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseUrl}}/user/photo",
+							"host": ["{{baseUrl}}"],
+							"path": ["user", "photo"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Change Password",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"currentPassword\": \"password123\",\n  \"newPassword\": \"newpassword123\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/user/password",
+							"host": ["{{baseUrl}}"],
+							"path": ["user", "password"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Bank Details",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/user/bank",
+							"host": ["{{baseUrl}}"],
+							"path": ["user", "bank"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update Bank Details",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"bankName\": \"Example Bank\",\n  \"accountNumber\": \"1234567890\",\n  \"accountName\": \"John Doe\",\n  \"routingNumber\": \"987654321\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/user/bank",
+							"host": ["{{baseUrl}}"],
+							"path": ["user", "bank"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get User Activity",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/user/activity",
+							"host": ["{{baseUrl}}"],
+							"path": ["user", "activity"]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Admin",
+			"item": [
+				{
+					"name": "Get All Users",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/admin/users",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "users"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get All Providers",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/admin/providers",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "providers"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Change User Role",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"role\": \"provider\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/admin/users/:userId/role",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "users", ":userId", "role"],
+							"variable": [
+								{
+									"key": "userId",
+									"value": "user_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete User",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/admin/users/:userId",
+							"host": ["{{baseUrl}}"],
+							"path": ["admin", "users", ":userId"],
+							"variable": [
+								{
+									"key": "userId",
+									"value": "user_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Services",
+			"item": [
+				{
+					"name": "Get All Services",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/services",
+							"host": ["{{baseUrl}}"],
+							"path": ["services"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Single Service",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/services/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["services", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "service_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create Service (Provider)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Premium Car Wash\",\n  \"description\": \"Complete exterior and interior wash\",\n  \"price\": 50,\n  \"duration\": 60,\n  \"category\": \"premium\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/services",
+							"host": ["{{baseUrl}}"],
+							"path": ["services"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get My Services (Provider)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/services/provider/me",
+							"host": ["{{baseUrl}}"],
+							"path": ["services", "provider", "me"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update Service (Provider)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Updated Service Name\",\n  \"price\": 60\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/services/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["services", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "service_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Service (Provider)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/services/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["services", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "service_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Washers",
+			"item": [
+				{
+					"name": "Get All Washers",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Nearby Washers",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers/nearby?latitude=40.7128&longitude=-74.0060&radius=5000&serviceId=",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "nearby"],
+							"query": [
+								{
+									"key": "latitude",
+									"value": "40.7128"
+								},
+								{
+									"key": "longitude",
+									"value": "-74.0060"
+								},
+								{
+									"key": "radius",
+									"value": "5000"
+								},
+								{
+									"key": "serviceId",
+									"value": ""
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Washer Status",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers/status",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "status"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Go Online",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers/online",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "online"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Go Offline",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers/offline",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "offline"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update Washer Location",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"latitude\": 40.7128,\n  \"longitude\": -74.0060\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/washers/location",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "location"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Accept Booking",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers/accept/:bookingId",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "accept", ":bookingId"],
+							"variable": [
+								{
+									"key": "bookingId",
+									"value": "booking_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Complete Wash",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers/complete/:bookingId",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "complete", ":bookingId"],
+							"variable": [
+								{
+									"key": "bookingId",
+									"value": "booking_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Preferred Services",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers/preferred-services",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "preferred-services"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Add Preferred Service",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"serviceId\": \"service_id_here\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/washers/preferred-services",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "preferred-services"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove Preferred Service",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers/preferred-services/:serviceId",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", "preferred-services", ":serviceId"],
+							"variable": [
+								{
+									"key": "serviceId",
+									"value": "service_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Washer Details",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/washers/:washerId/details",
+							"host": ["{{baseUrl}}"],
+							"path": ["washers", ":washerId", "details"],
+							"variable": [
+								{
+									"key": "washerId",
+									"value": "washer_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Bookings",
+			"item": [
+				{
+					"name": "Create Booking",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"serviceId\": \"service_id_here\",\n  \"vehicleId\": \"vehicle_id_here\",\n  \"washerId\": \"washer_id_here\",\n  \"scheduledDate\": \"2026-03-01T10:00:00Z\",\n  \"location\": {\n    \"address\": \"123 Main St\",\n    \"latitude\": 40.7128,\n    \"longitude\": -74.0060\n  },\n  \"couponCode\": \"SAVE10\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bookings",
+							"host": ["{{baseUrl}}"],
+							"path": ["bookings"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get My Bookings (User)",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/bookings/my-bookings",
+							"host": ["{{baseUrl}}"],
+							"path": ["bookings", "my-bookings"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Provider Bookings",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/bookings/provider-bookings",
+							"host": ["{{baseUrl}}"],
+							"path": ["bookings", "provider-bookings"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Single Booking",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/bookings/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["bookings", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "booking_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update Booking Status",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"status\": \"in-progress\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bookings/:id/status",
+							"host": ["{{baseUrl}}"],
+							"path": ["bookings", ":id", "status"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "booking_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Cancel Booking",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"reason\": \"Change of plans\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bookings/:id/cancel",
+							"host": ["{{baseUrl}}"],
+							"path": ["bookings", ":id", "cancel"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "booking_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Rebook Booking",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"scheduledDate\": \"2026-03-05T14:00:00Z\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/bookings/:id/rebook",
+							"host": ["{{baseUrl}}"],
+							"path": ["bookings", ":id", "rebook"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "booking_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Vehicles",
+			"item": [
+				{
+					"name": "Get My Vehicles",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/vehicle",
+							"host": ["{{baseUrl}}"],
+							"path": ["vehicle"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Add Vehicle",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"make\": \"Toyota\",\n  \"model\": \"Camry\",\n  \"year\": 2022,\n  \"color\": \"Black\",\n  \"licensePlate\": \"ABC123\",\n  \"vehicleType\": \"sedan\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/vehicle",
+							"host": ["{{baseUrl}}"],
+							"path": ["vehicle"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Vehicle By ID",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/vehicle/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["vehicle", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "vehicle_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update Vehicle",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PATCH",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"color\": \"White\",\n  \"licensePlate\": \"XYZ789\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/vehicle/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["vehicle", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "vehicle_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Vehicle",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/vehicle/:id",
+							"host": ["{{baseUrl}}"],
+							"path": ["vehicle", ":id"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "vehicle_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Set Default Vehicle",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PATCH",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/vehicle/:id/default",
+							"host": ["{{baseUrl}}"],
+							"path": ["vehicle", ":id", "default"],
+							"variable": [
+								{
+									"key": "id",
+									"value": "vehicle_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Coupons",
+			"item": [
+				{
+					"name": "Get All Coupons",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/coupon",
+							"host": ["{{baseUrl}}"],
+							"path": ["coupon"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create Coupon",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"SAVE20\",\n  \"discountType\": \"percentage\",\n  \"discountValue\": 20,\n  \"maxUsage\": 100,\n  \"expiryDate\": \"2026-12-31T23:59:59Z\",\n  \"minPurchaseAmount\": 30\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/coupon/create",
+							"host": ["{{baseUrl}}"],
+							"path": ["coupon", "create"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Apply Coupon",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"code\": \"SAVE20\",\n  \"amount\": 100\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/coupon/apply",
+							"host": ["{{baseUrl}}"],
+							"path": ["coupon", "apply"]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Receipts",
+			"item": [
+				{
+					"name": "Generate Receipt",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"bookingId\": \"booking_id_here\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/receipt",
+							"host": ["{{baseUrl}}"],
+							"path": ["receipt"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Receipt By Booking",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/receipt/booking/:bookingId",
+							"host": ["{{baseUrl}}"],
+							"path": ["receipt", "booking", ":bookingId"],
+							"variable": [
+								{
+									"key": "bookingId",
+									"value": "booking_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Ratings",
+			"item": [
+				{
+					"name": "Create Rating",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"bookingId\": \"booking_id_here\",\n  \"washerId\": \"washer_id_here\",\n  \"rating\": 5,\n  \"comment\": \"Excellent service!\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/rating",
+							"host": ["{{baseUrl}}"],
+							"path": ["rating"]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Rating By Booking",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/rating/booking/:bookingId",
+							"host": ["{{baseUrl}}"],
+							"path": ["rating", "booking", ":bookingId"],
+							"variable": [
+								{
+									"key": "bookingId",
+									"value": "booking_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get Ratings By Washer",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{baseUrl}}/rating/washer/:washerId",
+							"host": ["{{baseUrl}}"],
+							"path": ["rating", "washer", ":washerId"],
+							"variable": [
+								{
+									"key": "washerId",
+									"value": "washer_id_here"
+								}
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	]
+}
