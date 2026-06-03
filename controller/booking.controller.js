@@ -9,6 +9,7 @@ import { Vehicle } from "../model/vehicle.model.js";
 import { emitToUser } from "../socket/socket.js";
 import { isProviderAvailableNow } from "../utils/availability.util.js";
 import catchAsync from "../utils/catch.Async.js";
+import { getCurrentCatalogKeys } from "../utils/defaultServices.util.js";
 import { refreshProviderBusyState } from "../utils/providerBusy.util.js";
 import sendResponse from "../utils/sendResponse.js";
 
@@ -36,7 +37,6 @@ export const createBooking = catchAsync(async (req, res) => {
   const {
     provider,
     service,
-    price,
     couponCode,
     address,
     bookingDate,
@@ -49,7 +49,6 @@ export const createBooking = catchAsync(async (req, res) => {
   if (
     !provider ||
     !service ||
-    !price ||
     !address ||
     !bookingDate
   ) {
@@ -83,6 +82,40 @@ export const createBooking = catchAsync(async (req, res) => {
 
   if (washer.dailyWashLimit <= 0) {
     throw new AppError(httpStatus.BAD_REQUEST, "Washer daily limit completed");
+  }
+
+  const bookedService = await Service.findOne({
+    _id: service,
+    isActive: true,
+    catalogKey: { $in: getCurrentCatalogKeys() },
+  })
+    .select("_id provider catalogKey title price serviceType carSize carName carModel description")
+    .lean();
+
+  if (!bookedService) {
+    throw new AppError(httpStatus.NOT_FOUND, "Service not found");
+  }
+
+  if (
+    bookedService.provider &&
+    bookedService.provider.toString() !== provider.toString()
+  ) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Selected service does not belong to this provider"
+    );
+  }
+
+  if (payment?.method && payment.method !== "online") {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Owvo bookings support in-app online payments only"
+    );
+  }
+
+  const price = Number(bookedService.price);
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid service price");
   }
 
   let discountPrice = 0;
@@ -172,20 +205,19 @@ export const createBooking = catchAsync(async (req, res) => {
     bookingDate,
     postalCode: normalizedPostalCode,
     currency: "GBP",
+    payment: {
+      method: "online",
+      status: "pending",
+    },
     status: "pending",
   });
 
   // ✅ Real-time: notify the washer about the new incoming booking request
-  const [customer, bookedService] = await Promise.all([
-    User.findById(userId)
-      .select(
-        "_id name email phoneNumber photo location residentialAddress providerAddress customerRatingAverage customerRatingCount"
-      )
-      .lean(),
-    Service.findById(service)
-      .select("_id title price serviceType carSize carName carModel")
-      .lean(),
-  ]);
+  const customer = await User.findById(userId)
+    .select(
+      "_id name email phoneNumber photo location residentialAddress providerAddress customerRatingAverage customerRatingCount"
+    )
+    .lean();
 
   const customerPayload = customer
     ? {
@@ -589,7 +621,6 @@ export const rebookBooking = catchAsync(async (req, res) => {
 
   const provider = prev.provider;
   const service = prev.service;
-  const price = prev.price;
 
   const washer = await User.findById(provider);
   if (!washer || washer.role !== "provider") {
@@ -610,6 +641,33 @@ export const rebookBooking = catchAsync(async (req, res) => {
   }
   if (washer.dailyWashLimit <= 0) {
     throw new AppError(httpStatus.BAD_REQUEST, "Washer daily limit completed");
+  }
+
+  const currentService = await Service.findOne({
+    _id: service,
+    isActive: true,
+    catalogKey: { $in: getCurrentCatalogKeys() },
+  })
+    .select("_id provider price")
+    .lean();
+
+  if (!currentService) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Service is no longer available");
+  }
+
+  if (
+    currentService.provider &&
+    currentService.provider.toString() !== provider.toString()
+  ) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Selected service does not belong to this provider"
+    );
+  }
+
+  const price = Number(currentService.price);
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid service price");
   }
 
   const finalAddress = address ?? prev.address;

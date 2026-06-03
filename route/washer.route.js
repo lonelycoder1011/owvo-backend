@@ -1,10 +1,12 @@
 import express from "express";
 import {
+  acceptWasherPolicies,
   acceptBooking,
   addPreferredService,
   completeWash,
   getAllWashers,
   getWasherAvailability,
+  getWasherPolicyStatus,
   // ─── Provider Income ──────────────────────────────────────────────────────
   getDayIncomeProvider,
   // ─── Nearby Washers ───────────────────────────────────────────────────────
@@ -37,6 +39,8 @@ router.get("/nearby", getNearbyWashers);
 
 // ─── Authenticated ────────────────────────────────────────────────────────────
 router.get("/status", protect, getWasherStatus);
+router.get("/policies", protect, getWasherPolicyStatus);
+router.post("/policies/accept", protect, acceptWasherPolicies);
 router.get("/availability", protect, getWasherAvailability);
 router.put("/availability", protect, updateWasherAvailability);
 router.post("/online", protect, goOnline);

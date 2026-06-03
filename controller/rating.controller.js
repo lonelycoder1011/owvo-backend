@@ -10,12 +10,13 @@ import sendResponse from "../utils/sendResponse.js";
 export const createRating = catchAsync(async (req, res) => {
   const userId = req.user._id;
   const { bookingId, rating, review } = req.body;
+  const ratingValue = Number(rating);
 
   if (!bookingId) {
     throw new AppError(httpStatus.BAD_REQUEST, "bookingId is required");
   }
 
-  if (!rating || rating < 1 || rating > 5) {
+  if (!Number.isFinite(ratingValue) || ratingValue < 1 || ratingValue > 5) {
     throw new AppError(httpStatus.BAD_REQUEST, "Rating must be between 1 and 5");
   }
 
@@ -42,8 +43,10 @@ export const createRating = catchAsync(async (req, res) => {
       booking: booking._id,
       user: userId,
       provider: booking.provider,
-      rating,
+      rating: ratingValue,
       review: review?.trim() || "",
+      isLowRating: ratingValue <= 2,
+      requiresReview: ratingValue <= 2,
     },
     { new: true, upsert: true, setDefaultsOnInsert: true }
   );

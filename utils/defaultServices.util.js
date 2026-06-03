@@ -1,104 +1,60 @@
 import { Service } from "../model/service.model.js";
 import { User } from "../model/user.model.js";
 
-const defaultServices = [
+export const defaultServices = [
   {
-    catalogKey: "basic-wash",
+    catalogKey: "express-wash",
     serviceType: "basic",
-    title: "Basic Wash",
-    price: 8,
+    title: "Express Wash",
+    price: 15,
     carSize: "small",
     carName: "Any car",
     carModel: "Any model",
-    description: "Quick exterior wash for standard testing and first bookings.",
+    description: "Quick exterior clean - Exterior rinse & light hand wash - 10-12 mins",
     isActive: true,
   },
   {
-    catalogKey: "exterior-wash",
+    catalogKey: "essential-wash",
     serviceType: "basic",
-    title: "Exterior Wash",
-    price: 10,
+    title: "Essential Wash",
+    price: 20,
     carSize: "medium",
     carName: "Any car",
     carModel: "Any model",
-    description: "Foam wash, rinse, wheels, windows, and hand dry.",
+    description: "Complete exterior clean & dry - Foam wash + hand dry + wheels cleaned - 15 mins",
     isActive: true,
   },
   {
-    catalogKey: "interior-dry-wash",
+    catalogKey: "standard-detail",
     serviceType: "standard",
-    title: "Interior Dry Wash",
-    price: 12,
+    title: "Standard Detail",
+    price: 25,
     carSize: "medium",
     carName: "Any car",
     carModel: "Any model",
-    description: "Interior vacuum, dusting, mats, dashboard, and dry wipe.",
-    isActive: true,
-  },
-  {
-    catalogKey: "standard-wash",
-    serviceType: "standard",
-    title: "Standard Wash",
-    price: 12,
-    carSize: "medium",
-    carName: "Any car",
-    carModel: "Any model",
-    description: "Balanced exterior wash with wheels, glass, and hand dry.",
-    isActive: true,
-  },
-  {
-    catalogKey: "standard-full-wash",
-    serviceType: "standard",
-    title: "Standard Full Wash",
-    price: 15,
-    carSize: "medium",
-    carName: "Any car",
-    carModel: "Any model",
-    description: "Exterior wash with extra attention to wheels and glass.",
-    isActive: true,
-  },
-  {
-    catalogKey: "premium-wash",
-    serviceType: "premium",
-    title: "Premium Wash",
-    price: 18,
-    carSize: "high",
-    carName: "Any car",
-    carModel: "Any model",
-    description: "Premium exterior finish for larger or high-care vehicles.",
+    description: "Exterior + interior refresh - Exterior wash + vacuum + dashboard wipe - 18-20 mins",
     isActive: true,
   },
   {
     catalogKey: "premium-detail",
     serviceType: "premium",
     title: "Premium Detail",
-    price: 22,
+    price: 35,
     carSize: "high",
     carName: "Any car",
     carModel: "Any model",
-    description: "Full wash, interior clean, trim wipe, tyres, and final finish.",
+    description: "Full clean with premium finish - Full wash + interior clean + tyre shine + windows - 22-25 mins",
     isActive: true,
   },
   {
-    catalogKey: "engine-bay-clean",
+    catalogKey: "full-detail",
     serviceType: "premium",
-    title: "Engine Bay Clean",
-    price: 18,
-    carSize: "medium",
+    title: "Full Detail",
+    price: 50,
+    carSize: "high",
     carName: "Any car",
     carModel: "Any model",
-    description: "Careful dry engine bay clean and visible surface wipe-down.",
-    isActive: true,
-  },
-  {
-    catalogKey: "large-vehicle-wash",
-    serviceType: "premium",
-    title: "Large Vehicle Wash",
-    price: 25,
-    carSize: "high",
-    carName: "SUV or van",
-    carModel: "Any model",
-    description: "Extended wash for SUVs, vans, and larger family vehicles.",
+    description: "Deep clean & full detailing service - Deep interior + leather care + exterior finish - 30-35 mins",
     isActive: true,
   },
 ];
@@ -107,12 +63,42 @@ const globalServiceFilter = {
   $or: [{ provider: null }, { provider: { $exists: false } }],
 };
 
+const currentCatalogKeys = defaultServices.map((service) => service.catalogKey);
+const defaultServicesByCatalogKey = new Map(
+  defaultServices.map((service) => [service.catalogKey, service])
+);
+
+export const getCurrentCatalogKeys = () => [...currentCatalogKeys];
+
+export const findDefaultServiceForPayload = (payload = {}) => {
+  if (payload.catalogKey && defaultServicesByCatalogKey.has(payload.catalogKey)) {
+    return defaultServicesByCatalogKey.get(payload.catalogKey);
+  }
+
+  const normalizedTitle = payload.title?.toString().trim().toLowerCase();
+  if (!normalizedTitle) return null;
+
+  return (
+    defaultServices.find(
+      (service) => service.title.toLowerCase() === normalizedTitle
+    ) || null
+  );
+};
+
 export const toPlainServices = (services) =>
   services.map((service) =>
     typeof service?.toObject === "function" ? service.toObject() : service
   );
 
 export const ensureDefaultServices = async () => {
+  await Service.updateMany(
+    {
+      ...globalServiceFilter,
+      catalogKey: { $exists: true, $nin: currentCatalogKeys },
+    },
+    { $set: { isActive: false } }
+  );
+
   for (const defaultService of defaultServices) {
     let service = await Service.findOne({
       catalogKey: defaultService.catalogKey,
@@ -142,6 +128,7 @@ export const syncProviderPreferredServices = async (providerId) => {
   const activeServices = await Service.find({
     provider: providerId,
     isActive: true,
+    catalogKey: { $in: currentCatalogKeys },
   }).select("_id");
 
   await User.findByIdAndUpdate(providerId, {
@@ -157,10 +144,40 @@ export const ensureProviderServices = async (providerId) => {
     price: 1,
   });
 
+  await Service.updateMany(
+    {
+      provider: providerId,
+      catalogKey: { $exists: true, $nin: currentCatalogKeys },
+    },
+    { $set: { isActive: false } }
+  );
+
+  for (const providerService of providerServices) {
+    const defaultService = findDefaultServiceForPayload(providerService);
+    if (!defaultService) continue;
+
+    const fixedFields = {
+      title: defaultService.title,
+      price: defaultService.price,
+    };
+
+    let changed = false;
+    Object.entries(fixedFields).forEach(([field, value]) => {
+      if (providerService[field] !== value) {
+        providerService[field] = value;
+        changed = true;
+      }
+    });
+
+    if (changed) {
+      await providerService.save();
+    }
+  }
+
   const existingCatalogKeys = new Set(
     providerServices
       .map((service) => service.catalogKey)
-      .filter((catalogKey) => Boolean(catalogKey))
+      .filter((catalogKey) => currentCatalogKeys.includes(catalogKey))
   );
 
   const missingDefaults = defaultCatalog.filter(
@@ -189,5 +206,8 @@ export const ensureProviderServices = async (providerId) => {
 
   await syncProviderPreferredServices(providerId);
 
-  return Service.find({ provider: providerId }).sort({ price: 1 });
+  return Service.find({
+    provider: providerId,
+    catalogKey: { $in: currentCatalogKeys },
+  }).sort({ price: 1 });
 };

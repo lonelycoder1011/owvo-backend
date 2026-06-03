@@ -30,6 +30,14 @@ const ratingSchema = new mongoose.Schema(
       trim: true,
       maxlength: 1000,
     },
+    isLowRating: {
+      type: Boolean,
+      default: false,
+    },
+    requiresReview: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true }
 );

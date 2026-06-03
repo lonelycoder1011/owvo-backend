@@ -5,39 +5,21 @@ import catchAsync from "../utils/catch.Async.js";
 import {
   ensureDefaultServices,
   ensureProviderServices,
+  findDefaultServiceForPayload,
   syncProviderPreferredServices,
 } from "../utils/defaultServices.util.js";
 import sendResponse from "../utils/sendResponse.js";
 
 
 export const createService = catchAsync(async (req, res) => {
-  const providerId = req.user._id;
-
   if (req.user.role !== "provider") {
     throw new AppError(httpStatus.FORBIDDEN,"Only providers can create services");
   }
 
-  const serviceData = {
-    serviceType: req.body.serviceType,
-    title: req.body.title,
-    price: req.body.price,
-    carSize: req.body.carSize,
-    carName: req.body.carName,
-    carModel: req.body.carModel,
-    description: req.body.description,
-    isActive: req.body.isActive ?? true,
-    provider: providerId,
-  };
-
-  const service = await Service.create(serviceData);
-  await syncProviderPreferredServices(providerId);
-
-  sendResponse(res, {
-    statusCode: httpStatus.CREATED,
-    success: true,
-    message: "Service created successfully",
-    data: service,
-  });
+  throw new AppError(
+    httpStatus.FORBIDDEN,
+    "Service pricing is controlled by owvo. Providers cannot create custom priced services."
+  );
 });
 
 
@@ -121,10 +103,16 @@ export const updateService = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.FORBIDDEN, "You are not allowed to update this service");
   }
 
+  if (req.body.price !== undefined) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "Service pricing is controlled by owvo and cannot be changed by providers"
+    );
+  }
+
   const editableFields = [
     "serviceType",
     "title",
-    "price",
     "carSize",
     "carName",
     "carModel",
@@ -137,6 +125,12 @@ export const updateService = catchAsync(async (req, res) => {
       service[field] = req.body[field];
     }
   });
+
+  const defaultService = findDefaultServiceForPayload(service);
+  if (defaultService) {
+    service.title = defaultService.title;
+    service.price = defaultService.price;
+  }
 
   await service.save();
   await syncProviderPreferredServices(req.user._id);

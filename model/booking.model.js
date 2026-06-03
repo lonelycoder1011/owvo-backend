@@ -64,11 +64,13 @@ const bookingSchema = new mongoose.Schema(
     payment: {
       method: {
         type: String,
-        enum: ["cash", "online"],
+        enum: ["online"],
+        default: "online",
       },
       status: {
         type: String,
         enum: ["pending", "paid", "failed"],
+        default: "pending",
       },
       trxId: {
         type: String,

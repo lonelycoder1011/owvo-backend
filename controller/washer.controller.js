@@ -15,6 +15,7 @@ import {
 import catchAsync from "../utils/catch.Async.js";
 import {
   ensureProviderServices,
+  getCurrentCatalogKeys,
   toPlainServices,
 } from "../utils/defaultServices.util.js";
 import {
@@ -22,6 +23,23 @@ import {
   refreshProviderBusyState,
 } from "../utils/providerBusy.util.js";
 import sendResponse from "../utils/sendResponse.js";
+
+const WASHER_POLICY_VERSION = "2026-06-03";
+
+const hasAcceptedWasherPolicies = (washer) =>
+  Boolean(
+    washer?.policyAcceptance?.safetyGuidelinesAccepted &&
+      washer?.policyAcceptance?.washerAgreementAccepted
+  );
+
+const assertWasherPoliciesAccepted = (washer) => {
+  if (!hasAcceptedWasherPolicies(washer)) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "Please accept the Owvo Safety Guidelines and Washer Agreement before continuing."
+    );
+  }
+};
 
 const toWasherSocketPayload = (washer) => ({
   _id: washer._id.toString(),
@@ -107,7 +125,7 @@ export const getAllWashers = catchAsync(async (req, res) => {
 
 export const getWasherStatus = catchAsync(async (req, res) => {
   const washer = await User.findById(req.user._id).select(
-    "dailyWashLimit isOnline isBusy availability location"
+    "dailyWashLimit isOnline isBusy availability location policyAcceptance"
   );
 
   if (!washer) {
@@ -119,6 +137,62 @@ export const getWasherStatus = catchAsync(async (req, res) => {
     success: true,
     message: "Washer status fetched",
     data: washer,
+  });
+});
+
+export const getWasherPolicyStatus = catchAsync(async (req, res) => {
+  const washer = await User.findById(req.user._id).select(
+    "role policyAcceptance"
+  );
+
+  if (!washer || washer.role !== "provider") {
+    throw new AppError(httpStatus.NOT_FOUND, "Washer not found");
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Washer policy status fetched",
+    data: {
+      policyAcceptance: washer.policyAcceptance,
+      allAccepted: hasAcceptedWasherPolicies(washer),
+    },
+  });
+});
+
+export const acceptWasherPolicies = catchAsync(async (req, res) => {
+  const washer = await User.findById(req.user._id);
+
+  if (!washer || washer.role !== "provider") {
+    throw new AppError(httpStatus.NOT_FOUND, "Washer not found");
+  }
+
+  const { safetyGuidelinesAccepted, washerAgreementAccepted } = req.body || {};
+  const now = new Date();
+
+  washer.policyAcceptance = washer.policyAcceptance || {};
+  washer.policyAcceptance.version = WASHER_POLICY_VERSION;
+
+  if (safetyGuidelinesAccepted === true) {
+    washer.policyAcceptance.safetyGuidelinesAccepted = true;
+    washer.policyAcceptance.safetyGuidelinesAcceptedAt = now;
+  }
+
+  if (washerAgreementAccepted === true) {
+    washer.policyAcceptance.washerAgreementAccepted = true;
+    washer.policyAcceptance.washerAgreementAcceptedAt = now;
+  }
+
+  await washer.save();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Washer policies updated",
+    data: {
+      policyAcceptance: washer.policyAcceptance,
+      allAccepted: hasAcceptedWasherPolicies(washer),
+    },
   });
 });
 
@@ -167,6 +241,8 @@ export const goOnline = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "Washer not found");
   }
 
+  assertWasherPoliciesAccepted(washer);
+
   if (!isProviderAvailableNow(washer)) {
     throw new AppError(
       httpStatus.FORBIDDEN,
@@ -214,6 +290,8 @@ export const acceptBooking = catchAsync(async (req, res) => {
   if (!washer || washer.role !== "provider") {
     throw new AppError(httpStatus.NOT_FOUND, "Washer not found");
   }
+
+  assertWasherPoliciesAccepted(washer);
 
   const statusMessages = {
     accepted: "Your booking has been accepted!",
@@ -598,7 +676,7 @@ export const getWasherDetails = catchAsync(async (req, res) => {
 export const getPreferredServices = catchAsync(async (req, res) => {
   const washer = await User.findById(req.user._id).populate(
     "preferredServices",
-    "title price serviceType carSize carName carModel description isActive"
+    "catalogKey title price serviceType carSize carName carModel description isActive"
   );
 
   if (!washer || washer.role !== "provider") {
@@ -654,7 +732,7 @@ export const addPreferredService = catchAsync(async (req, res) => {
   await washer.save();
   await washer.populate(
     "preferredServices",
-    "title price serviceType carSize carName carModel description isActive"
+    "catalogKey title price serviceType carSize carName carModel description isActive"
   );
 
   sendResponse(res, {
@@ -828,6 +906,8 @@ export const getNearbyWashers = catchAsync(async (req, res) => {
   const query = {
     role: "provider",
     isOnline: true,
+    "policyAcceptance.safetyGuidelinesAccepted": true,
+    "policyAcceptance.washerAgreementAccepted": true,
     location: {
       $nearSphere: {
         $geometry: {
@@ -849,11 +929,11 @@ export const getNearbyWashers = catchAsync(async (req, res) => {
 
   const washers = await User.find(query)
     .select(
-      "_id name photo phoneNumber isOnline isBusy dailyWashLimit location providerAddress residentialAddress serviceArea preferredServices availability"
+      "_id name photo phoneNumber isOnline isBusy dailyWashLimit location providerAddress residentialAddress serviceArea preferredServices availability policyAcceptance"
     )
     .populate(
       "preferredServices",
-      "title price serviceType carSize carName carModel isActive"
+      "catalogKey title price serviceType carSize carName carModel description isActive"
     );
     console.log("Nearby washers query:", JSON.stringify(query));
     console.log("Found washers:", washers);
@@ -883,8 +963,9 @@ export const getNearbyWashers = catchAsync(async (req, res) => {
   const providerServices = await Service.find({
     provider: { $in: providerIds },
     isActive: true,
+    catalogKey: { $in: getCurrentCatalogKeys() },
   })
-    .select("provider title price serviceType carSize carName carModel isActive")
+    .select("provider catalogKey title price serviceType carSize carName carModel description isActive")
     .sort({ price: 1 });
   const servicesByProviderId = new Map();
   providerServices.forEach((service) => {

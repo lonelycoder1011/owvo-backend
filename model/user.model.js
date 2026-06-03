@@ -47,6 +47,13 @@ const userSchema = new Schema(
     isOnline: { type: Boolean, default: false },
     isBusy: { type: Boolean, default: false },
     dailyWashLimit: { type: Number, default: 7 },
+    policyAcceptance: {
+      safetyGuidelinesAccepted: { type: Boolean, default: false },
+      safetyGuidelinesAcceptedAt: { type: Date },
+      washerAgreementAccepted: { type: Boolean, default: false },
+      washerAgreementAcceptedAt: { type: Date },
+      version: { type: String, default: "2026-06-03" },
+    },
     availability: {
       mode: {
         type: String,

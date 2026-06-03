@@ -13,6 +13,7 @@ import ratingRoutes from "../route/rating.route.js";
 import paymentRoutes from "../route/payment.route.js";
 import chatRoutes from "../route/chat.route.js";
 import userRatingRoutes from "../route/userRating.route.js";
+import issueReportRoutes from "../route/issueReport.route.js";
 
 const router = express.Router();
 
@@ -29,5 +30,6 @@ router.use("/receipt", receiptRoutes);
 router.use("/rating", ratingRoutes);
 router.use("/chat", chatRoutes);
 router.use("/user-rating", userRatingRoutes);
+router.use("/reports", issueReportRoutes);
 
 export default router;
