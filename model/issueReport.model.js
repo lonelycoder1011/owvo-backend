@@ -9,7 +9,7 @@ const issueReportSchema = new mongoose.Schema(
     },
     reporterRole: {
       type: String,
-      enum: ["user", "provider", "admin"],
+      enum: ["user", "provider", "admin", "staff"],
       required: true,
     },
     booking: {
@@ -28,6 +28,11 @@ const issueReportSchema = new mongoose.Schema(
       trim: true,
       maxlength: 2000,
     },
+    type: {
+      type: String,
+      enum: ["general", "payment", "service_quality", "safety", "provider_conduct"],
+      default: "general",
+    },
     photo: {
       public_id: { type: String, default: "" },
       url: { type: String, default: "" },
@@ -37,6 +42,21 @@ const issueReportSchema = new mongoose.Schema(
       enum: ["open", "reviewing", "resolved", "dismissed"],
       default: "open",
     },
+    assignedTo: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    resolutionNote: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    updatedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
   },
   { timestamps: true }
 );
@@ -44,5 +64,6 @@ const issueReportSchema = new mongoose.Schema(
 issueReportSchema.index({ reporter: 1, createdAt: -1 });
 issueReportSchema.index({ booking: 1, createdAt: -1 });
 issueReportSchema.index({ status: 1, createdAt: -1 });
+issueReportSchema.index({ type: 1, createdAt: -1 });
 
 export const IssueReport = mongoose.model("IssueReport", issueReportSchema);

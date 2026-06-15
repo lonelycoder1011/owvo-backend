@@ -1,12 +1,540 @@
 import httpStatus from "http-status";
+import fs from "fs";
+import path from "path";
+import mongoose from "mongoose";
+import Stripe from "stripe";
 import { User } from "../model/user.model.js";
 import AppError from "../errors/AppError.js";
 import sendResponse from "../utils/sendResponse.js";
 import catchAsync from "../utils/catch.Async.js";
+import { Booking } from "../model/booking.model.js";
+import { IssueReport } from "../model/issueReport.model.js";
+import { ActivityLog } from "../model/activityLog.model.js";
+import { Receipt } from "../model/receipt.model.js";
+import { paymentInfo } from "../model/payment.model.js";
+import { Payout } from "../model/payout.model.js";
+import { PlatformSetting } from "../model/platformSetting.model.js";
+import { AdminWithdrawal } from "../model/adminWithdrawal.model.js";
+import { Service } from "../model/service.model.js";
+import { Rating } from "../model/rating.model.js";
+import { UserRating } from "../model/userRating.model.js";
+import { emitToUser, broadcast } from "../socket/socket.js";
+import { refreshProviderBusyState } from "../utils/providerBusy.util.js";
+import { recordActivity } from "../utils/activityLog.util.js";
+import {
+  ensureDefaultServices,
+  ensureProviderServices,
+  syncProviderPreferredServices,
+} from "../utils/defaultServices.util.js";
+
+const DASHBOARD_ROLES = ["admin", "staff"];
+const USER_ROLES = ["user", "admin", "provider", "staff"];
+const BOOKING_STATUSES = [
+  "pending",
+  "accepted",
+  "arrived",
+  "ongoing",
+  "completed",
+  "cancelled",
+];
+const STAFF_BOOKING_STATUSES = ["accepted", "arrived", "ongoing", "completed", "cancelled"];
+
+const startOfDay = (date = new Date()) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+const startOfWeek = (date = new Date()) => {
+  const value = startOfDay(date);
+  const day = value.getDay();
+  const diff = day === 0 ? 6 : day - 1;
+  value.setDate(value.getDate() - diff);
+  return value;
+};
+
+const startOfMonth = (date = new Date()) =>
+  new Date(date.getFullYear(), date.getMonth(), 1);
+
+const startOfYear = (date = new Date()) => new Date(date.getFullYear(), 0, 1);
+
+const asMoney = (amount) => Math.round((Number(amount) || 0) * 100) / 100;
+
+const DATE_RANGE_VALUES = ["daily", "today", "weekly", "monthly", "yearly", "all", "all_time"];
+const UPLOADS_ROOT = path.resolve(process.cwd(), "uploads");
+const IMAGE_CONTENT_TYPES = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
+
+const resolveLocalUploadPath = (value = "") => {
+  let pathname = String(value || "").trim();
+  if (!pathname) return "";
+
+  try {
+    pathname = new URL(pathname).pathname;
+  } catch {
+    // Keep plain relative and absolute paths as-is.
+  }
+
+  const relativePath = pathname.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!relativePath.startsWith("uploads/")) return "";
+
+  const filePath = path.resolve(process.cwd(), relativePath);
+  if (!filePath.startsWith(`${UPLOADS_ROOT}${path.sep}`)) return "";
+  return filePath;
+};
+
+const getStripe = () =>
+  new Stripe(process.env.STRIPE_SECRET_KEY, {
+    apiVersion: process.env.STRIPE_API_VERSION || "2025-11-17.clover",
+  });
+
+const centsToMoney = (amount) => asMoney((Number(amount) || 0) / 100);
+
+const getStripeBalanceSnapshot = async () => {
+  const snapshot = {
+    configured: Boolean(process.env.STRIPE_SECRET_KEY),
+    available: 0,
+    pending: 0,
+    currency: "GBP",
+    liveMode: null,
+    error: "",
+  };
+
+  if (!snapshot.configured) {
+    snapshot.error = "STRIPE_SECRET_KEY is not configured";
+    return snapshot;
+  }
+
+  try {
+    const balance = await getStripe().balance.retrieve();
+    const preferredCurrency = "gbp";
+    const available =
+      balance.available.find((entry) => entry.currency === preferredCurrency) ||
+      balance.available[0];
+    const pending =
+      balance.pending.find((entry) => entry.currency === preferredCurrency) ||
+      balance.pending[0];
+
+    snapshot.available = centsToMoney(available?.amount);
+    snapshot.pending = centsToMoney(pending?.amount);
+    snapshot.currency = (available?.currency || pending?.currency || "gbp").toUpperCase();
+    snapshot.liveMode = Boolean(balance.livemode);
+    return snapshot;
+  } catch (error) {
+    snapshot.error = error?.message || "Unable to fetch Stripe balance";
+    return snapshot;
+  }
+};
+
+const getDateRange = (query = {}) => {
+  const now = new Date();
+  const requested = query.range?.toString().toLowerCase();
+  const range = DATE_RANGE_VALUES.includes(requested) ? requested : "weekly";
+
+  if (range === "all" || range === "all_time") {
+    return { range: "all", from: null, to: null };
+  }
+
+  const customFrom = query.from ? new Date(query.from) : null;
+  const customTo = query.to ? new Date(query.to) : null;
+  if (customFrom && !Number.isNaN(customFrom.getTime())) {
+    const to = customTo && !Number.isNaN(customTo.getTime()) ? customTo : now;
+    return { range, from: customFrom, to };
+  }
+
+  const starts = {
+    daily: startOfDay(now),
+    today: startOfDay(now),
+    weekly: startOfWeek(now),
+    monthly: startOfMonth(now),
+    yearly: startOfYear(now),
+  };
+
+  return {
+    range: range === "today" ? "daily" : range,
+    from: starts[range] || startOfWeek(now),
+    to: now,
+  };
+};
+
+const dateFilter = (field, query) => {
+  const range = getDateRange(query);
+  if (!range.from && !range.to) return {};
+
+  return {
+    [field]: {
+      ...(range.from ? { $gte: range.from } : {}),
+      ...(range.to ? { $lte: range.to } : {}),
+    },
+  };
+};
+
+const mergeFilter = (base, field, query) => ({
+  ...base,
+  ...dateFilter(field, query),
+});
+
+const getRevenueGroupFormat = (range) => {
+  if (range === "daily") return "%Y-%m-%dT%H:00:00.000Z";
+  if (range === "yearly" || range === "all") return "%Y-%m";
+  return "%Y-%m-%d";
+};
+
+const dashboardUserSelect =
+  "-password -refreshToken -verificationInfo.token -bankDetails.accountNumber -bankDetails.sortCode";
+const providerVerificationSelect =
+  "-password -refreshToken -verificationInfo.token";
+
+const REPORT_TYPES = ["general", "payment", "service_quality", "safety", "provider_conduct"];
+const STAFF_MENUS = [
+  "dashboard",
+  "bookings",
+  "washers",
+  "customers",
+  "provider-verification",
+  "payouts-payments",
+  "earnings",
+  "reports",
+  "staff-management",
+  "notifications",
+  "settings",
+  "system-logs",
+];
+
+const globalServiceFilter = {
+  $or: [{ provider: null }, { provider: { $exists: false } }],
+};
+
+const serviceEditableFields = [
+  "serviceType",
+  "title",
+  "price",
+  "carSize",
+  "carName",
+  "carModel",
+  "description",
+  "isActive",
+];
+
+const getPlatformSettingsDoc = async () =>
+  PlatformSetting.findOneAndUpdate(
+    { key: "global" },
+    { $setOnInsert: { key: "global" } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+const bookingPopulate = [
+  {
+    path: "user",
+    select:
+      "_id name email phoneNumber photo location residentialAddress providerAddress customerRatingAverage customerRatingCount",
+  },
+  {
+    path: "provider",
+    select:
+      "_id name email phoneNumber photo location providerAddress residentialAddress serviceArea isOnline isBusy adminVerification enforcement",
+  },
+  {
+    path: "service",
+    select: "_id title price serviceType carSize carName carModel",
+  },
+  {
+    path: "vehicle",
+    select: "registrationNo make model year size image isDefault",
+  },
+];
+
+const buildBookingSocketPayload = (booking) => {
+  const userId = booking.user?._id?.toString?.() || booking.user?.toString?.();
+  const providerId =
+    booking.provider?._id?.toString?.() || booking.provider?.toString?.();
+
+  return {
+    bookingId: booking._id?.toString(),
+    status: booking.status,
+    userId,
+    providerId,
+    serviceId: booking.service?._id?.toString?.() || booking.service?.toString?.(),
+    price: booking.finalPrice,
+    currency: booking.currency,
+    arrivedAt: booking.arrivedAt,
+    washEndsAt: booking.washEndsAt,
+    updatedAt: booking.updatedAt,
+  };
+};
+
+const createReceiptForCompletedBooking = async (booking) => {
+  if (booking.status !== "completed") return;
+
+  const bookingUserId = booking.user?._id || booking.user;
+  const bookingProviderId = booking.provider?._id || booking.provider;
+  const serviceId = booking.service?._id || booking.service;
+  const receiptNo = `RCPT-${booking._id.toString().slice(-6).toUpperCase()}`;
+
+  await Receipt.findOneAndUpdate(
+    { booking: booking._id },
+    {
+      booking: booking._id,
+      user: bookingUserId,
+      provider: bookingProviderId,
+      service: serviceId,
+      subtotal: booking.price,
+      discount: booking.discountPrice || 0,
+      tax: 0,
+      total: booking.finalPrice,
+      currency: booking.currency || "GBP",
+      receiptNo,
+      issuedAt: new Date(),
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+};
+
+const emitDashboardBookingStatus = (booking, status) => {
+  const payload = buildBookingSocketPayload(booking);
+  const userId = payload.userId;
+  const providerId = payload.providerId;
+  const statusMessages = {
+    accepted: "Your booking has been accepted!",
+    ongoing: "Your car wash has started!",
+    completed: "Your car wash is complete! Please rate your experience.",
+    cancelled: "Your booking has been cancelled.",
+    arrived: "The user has arrived at the washer location.",
+  };
+
+  if (userId && statusMessages[status]) {
+    emitToUser(userId, "booking_status_update", {
+      ...payload,
+      message: statusMessages[status],
+    });
+  }
+
+  if (providerId) {
+    emitToUser(providerId, "booking_status_update", {
+      ...payload,
+      message:
+        status === "completed"
+          ? "Booking marked as completed."
+          : "Booking status was updated by OWVO operations.",
+    });
+  }
+
+  broadcast("admin_booking_status_updated", payload);
+};
+
+export const getAdminMe = catchAsync(async (req, res) => {
+  const user = await User.findById(req.user._id).select(dashboardUserSelect).lean();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Dashboard account fetched successfully",
+    data: user,
+  });
+});
+
+export const updateAdminMe = catchAsync(async (req, res) => {
+  const { name, email } = req.body || {};
+  const user = await User.findById(req.user._id);
+
+  if (!user || !DASHBOARD_ROLES.includes(user.role)) {
+    throw new AppError(httpStatus.NOT_FOUND, "Dashboard account not found");
+  }
+
+  if (name !== undefined) {
+    user.name = name.toString().trim();
+  }
+
+  if (email !== undefined) {
+    const nextEmail = email.toString().trim().toLowerCase();
+    if (!nextEmail) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Email is required");
+    }
+
+    const existing = await User.findOne({ email: nextEmail, _id: { $ne: user._id } });
+    if (existing) {
+      throw new AppError(httpStatus.CONFLICT, "Email already exists");
+    }
+
+    user.email = nextEmail;
+  }
+
+  await user.save();
+  await recordActivity({
+    req,
+    action: "dashboard_account.updated",
+    entityType: "user",
+    entityId: user._id,
+    metadata: { name: user.name, email: user.email },
+  });
+
+  const data = await User.findById(user._id).select(dashboardUserSelect).lean();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Dashboard account updated successfully",
+    data,
+  });
+});
+
+export const getDashboardOverview = catchAsync(async (req, res) => {
+  const now = new Date();
+  const todayStart = startOfDay(now);
+  const weekStart = startOfWeek(now);
+  const monthStart = startOfMonth(now);
+  const selectedRange = getDateRange(req.query);
+  const completedDateFilter = dateFilter("completedAt", req.query);
+  const bookingDateFilter = dateFilter("createdAt", req.query);
+  const settings = await getPlatformSettingsDoc();
+  const commissionRate = Number(settings.commissionRate) || 0.25;
+
+  const [
+    totalRevenueAgg,
+    todayRevenueAgg,
+    weekRevenueAgg,
+    monthRevenueAgg,
+    totalBookings,
+    weekBookings,
+    activeWashers,
+    pendingReports,
+    completedBookingsForPayout,
+  ] = await Promise.all([
+    Booking.aggregate([
+      { $match: { status: "completed", ...completedDateFilter } },
+      { $group: { _id: null, total: { $sum: "$finalPrice" } } },
+    ]),
+    Booking.aggregate([
+      { $match: { status: "completed", completedAt: { $gte: todayStart } } },
+      { $group: { _id: null, total: { $sum: "$finalPrice" } } },
+    ]),
+    Booking.aggregate([
+      { $match: { status: "completed", completedAt: { $gte: weekStart } } },
+      { $group: { _id: null, total: { $sum: "$finalPrice" } } },
+    ]),
+    Booking.aggregate([
+      { $match: { status: "completed", completedAt: { $gte: monthStart } } },
+      { $group: { _id: null, total: { $sum: "$finalPrice" } } },
+    ]),
+    Booking.countDocuments(bookingDateFilter),
+    Booking.countDocuments({ createdAt: { $gte: weekStart } }),
+    User.countDocuments({ role: "provider", isOnline: true }),
+    IssueReport.countDocuments({
+      status: { $in: ["open", "reviewing"] },
+      ...dateFilter("createdAt", req.query),
+    }),
+    Booking.find({ status: "completed", ...completedDateFilter }).select("finalPrice").lean(),
+  ]);
+
+  const totalRevenue = asMoney(totalRevenueAgg[0]?.total);
+  const todayRevenue = asMoney(todayRevenueAgg[0]?.total);
+  const weekRevenue = asMoney(weekRevenueAgg[0]?.total);
+  const monthRevenue = asMoney(monthRevenueAgg[0]?.total);
+  const pendingPayoutAmount = asMoney(
+    completedBookingsForPayout.reduce(
+      (sum, booking) => sum + (Number(booking.finalPrice) || 0) * (1 - commissionRate),
+      0
+    )
+  );
+  const platformBalance = asMoney(totalRevenue * commissionRate);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Dashboard overview fetched successfully",
+    data: {
+      totalRevenue,
+      todayRevenue,
+      weekRevenue,
+      monthRevenue,
+      totalBookings,
+      weekBookings,
+      activeWashers,
+      pendingReports,
+      pendingPayouts: {
+        amount: pendingPayoutAmount,
+        count: completedBookingsForPayout.length,
+      },
+      platformBalance,
+      commissionRate,
+      range: selectedRange.range,
+    },
+  });
+});
+
+export const getDashboardRevenue = catchAsync(async (req, res) => {
+  const selectedRange = getDateRange(req.query);
+  const range = selectedRange.range;
+  const groupFormat = getRevenueGroupFormat(range);
+
+  const rows = await Booking.aggregate([
+    { $match: { status: "completed", ...dateFilter("completedAt", req.query) } },
+    {
+      $group: {
+        _id: {
+          $dateToString: {
+            format: groupFormat,
+            date: "$completedAt",
+          },
+        },
+        revenue: { $sum: "$finalPrice" },
+        bookings: { $sum: 1 },
+      },
+    },
+    { $sort: { _id: 1 } },
+  ]);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Dashboard revenue fetched successfully",
+    data: rows.map((row) => ({
+      date: row._id,
+      label: row._id,
+      revenue: asMoney(row.revenue),
+      bookings: row.bookings,
+    })),
+  });
+});
+
+export const getRecentBookings = catchAsync(async (req, res) => {
+  const bookings = await Booking.find(dateFilter("createdAt", req.query))
+    .populate(bookingPopulate)
+    .sort({ createdAt: -1 })
+    .limit(Number(req.query.limit) || 6);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Recent bookings fetched successfully",
+    data: bookings,
+  });
+});
+
+export const getUpcomingBookings = catchAsync(async (req, res) => {
+  const bookings = await Booking.find({
+    ...(Object.keys(dateFilter("bookingDate", req.query)).length
+      ? dateFilter("bookingDate", req.query)
+      : { bookingDate: { $gte: new Date() } }),
+    status: { $in: ["pending", "accepted", "arrived", "ongoing"] },
+  })
+    .populate(bookingPopulate)
+    .sort({ bookingDate: 1 })
+    .limit(Number(req.query.limit) || 6);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Upcoming bookings fetched successfully",
+    data: bookings,
+  });
+});
 
 export const getAllUsers = catchAsync(async (req, res) => {
   const users = await User.find().select(
-    "-password -refreshToken -verificationInfo.token"
+    dashboardUserSelect
   );
 
   sendResponse(res, {
@@ -18,13 +546,52 @@ export const getAllUsers = catchAsync(async (req, res) => {
 });
 
 export const getAllProviders = catchAsync(async (req, res) => {
-  const providers = await User.find({ role: "provider" });
+  await User.updateMany(
+    {
+      role: "provider",
+      isOnline: true,
+      $or: [
+        { "adminVerification.status": { $ne: "approved" } },
+        { "enforcement.status": { $in: ["suspended", "banned"] } },
+      ],
+    },
+    { $set: { isOnline: false, isBusy: false } }
+  );
+
+  const providers = await User.find(mergeFilter({ role: "provider" }, "createdAt", req.query))
+    .select(dashboardUserSelect)
+    .sort({ createdAt: -1 })
+    .lean();
+  const providerIds = providers.map((provider) => provider._id).filter(Boolean);
+  const ratingStats = await Rating.aggregate([
+    { $match: { provider: { $in: providerIds } } },
+    {
+      $group: {
+        _id: "$provider",
+        averageRating: { $avg: "$rating" },
+        totalRatings: { $sum: 1 },
+      },
+    },
+  ]);
+  const ratingsByProviderId = new Map(
+    ratingStats.map((stat) => [
+      stat._id.toString(),
+      {
+        customerRatingAverage: Number((stat.averageRating || 0).toFixed(1)),
+        customerRatingCount: stat.totalRatings || 0,
+      },
+    ])
+  );
+  const data = providers.map((provider) => ({
+    ...provider,
+    ...ratingsByProviderId.get(provider._id.toString()),
+  }));
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "All providers fetched successfully",
-    data: providers,
+    data,
   });
 });
 
@@ -32,7 +599,7 @@ export const changeUserRole = catchAsync(async (req, res) => {
   const { userId } = req.params;
   const { role } = req.body;
 
-  if (!["user", "admin", "provider"].includes(role)) {
+  if (!USER_ROLES.includes(role)) {
     throw new AppError(httpStatus.BAD_REQUEST, "Invalid role");
   }
 
@@ -43,6 +610,13 @@ export const changeUserRole = catchAsync(async (req, res) => {
 
   user.role = role;
   await user.save();
+  await recordActivity({
+    req,
+    action: "user.role_changed",
+    entityType: "user",
+    entityId: user._id,
+    metadata: { role },
+  });
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
@@ -60,9 +634,1496 @@ export const deleteUser = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
 
+  await recordActivity({
+    req,
+    action: "user.deleted",
+    entityType: "user",
+    entityId: user._id,
+    metadata: { email: user.email, role: user.role },
+  });
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "User deleted successfully",
+  });
+});
+
+export const getAllCustomers = catchAsync(async (req, res) => {
+  const customers = await User.find(mergeFilter({ role: "user" }, "createdAt", req.query))
+    .select(dashboardUserSelect)
+    .sort({
+      createdAt: -1,
+    })
+    .lean();
+  const customerIds = customers.map((customer) => customer._id).filter(Boolean);
+  const [ratingStats, recentReviews] = await Promise.all([
+    UserRating.aggregate([
+      { $match: { user: { $in: customerIds } } },
+      {
+        $group: {
+          _id: "$user",
+          averageRating: { $avg: "$rating" },
+          totalRatings: { $sum: 1 },
+        },
+      },
+    ]),
+    UserRating.find({ user: { $in: customerIds } })
+      .select("user provider booking rating review createdAt")
+      .populate("provider", "_id name email photo")
+      .sort({ createdAt: -1 })
+      .lean(),
+  ]);
+  const ratingsByCustomerId = new Map(
+    ratingStats.map((stat) => [
+      stat._id.toString(),
+      {
+        customerRatingAverage: Number((stat.averageRating || 0).toFixed(1)),
+        customerRatingCount: stat.totalRatings || 0,
+      },
+    ])
+  );
+  const reviewsByCustomerId = new Map();
+  recentReviews.forEach((review) => {
+    const customerId = review.user?.toString();
+    if (!customerId) return;
+    const bucket = reviewsByCustomerId.get(customerId) || [];
+    if (bucket.length < 3) {
+      bucket.push({
+        _id: review._id,
+        rating: review.rating,
+        review: review.review || "",
+        createdAt: review.createdAt,
+        provider: review.provider,
+      });
+    }
+    reviewsByCustomerId.set(customerId, bucket);
+  });
+  const data = customers.map((customer) => ({
+    ...customer,
+    ...ratingsByCustomerId.get(customer._id.toString()),
+    recentReviews: reviewsByCustomerId.get(customer._id.toString()) || [],
+  }));
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "All customers fetched successfully",
+    data,
+  });
+});
+
+export const getAdminBookings = catchAsync(async (req, res) => {
+  const {
+    status,
+    providerId,
+    customerId,
+    from,
+    to,
+    limit = 50,
+    page = 1,
+  } = req.query;
+
+  const filter = {};
+  if (status && BOOKING_STATUSES.includes(status)) filter.status = status;
+  if (providerId && mongoose.Types.ObjectId.isValid(providerId)) {
+    filter.provider = providerId;
+  }
+  if (customerId && mongoose.Types.ObjectId.isValid(customerId)) {
+    filter.user = customerId;
+  }
+  if (from || to) {
+    filter.bookingDate = {};
+    if (from) filter.bookingDate.$gte = new Date(from);
+    if (to) filter.bookingDate.$lte = new Date(to);
+  } else {
+    Object.assign(filter, dateFilter("bookingDate", req.query));
+  }
+
+  const pageNumber = Math.max(Number(page) || 1, 1);
+  const pageSize = Math.min(Math.max(Number(limit) || 50, 1), 100);
+
+  const [items, total] = await Promise.all([
+    Booking.find(filter)
+      .populate(bookingPopulate)
+      .sort({ createdAt: -1 })
+      .skip((pageNumber - 1) * pageSize)
+      .limit(pageSize),
+    Booking.countDocuments(filter),
+  ]);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Admin bookings fetched successfully",
+    data: {
+      items,
+      pagination: {
+        page: pageNumber,
+        limit: pageSize,
+        total,
+        pages: Math.ceil(total / pageSize),
+      },
+    },
+  });
+});
+
+export const getAdminBookingById = catchAsync(async (req, res) => {
+  const { id } = req.params;
+
+  const booking = await Booking.findById(id).populate(bookingPopulate);
+  if (!booking) {
+    throw new AppError(httpStatus.NOT_FOUND, "Booking not found");
+  }
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Admin booking fetched successfully",
+    data: booking,
+  });
+});
+
+export const updateAdminBookingStatus = catchAsync(async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body || {};
+
+  if (!BOOKING_STATUSES.includes(status)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid booking status");
+  }
+
+  if (req.user.role === "staff" && !STAFF_BOOKING_STATUSES.includes(status)) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "Staff can only update operational booking statuses"
+    );
+  }
+
+  const booking = await Booking.findById(id);
+  if (!booking) {
+    throw new AppError(httpStatus.NOT_FOUND, "Booking not found");
+  }
+
+  booking.status = status;
+  if (status === "arrived" && !booking.arrivedAt) {
+    booking.arrivedAt = new Date();
+    booking.washEndsAt = new Date(booking.arrivedAt.getTime() + 30 * 60 * 1000);
+  }
+
+  await booking.save();
+  await refreshProviderBusyState(booking.provider);
+  await createReceiptForCompletedBooking(booking);
+  await booking.populate(bookingPopulate);
+
+  emitDashboardBookingStatus(booking, status);
+  await recordActivity({
+    req,
+    action: "booking.status_updated",
+    entityType: "booking",
+    entityId: booking._id,
+    metadata: { status },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Booking status updated successfully",
+    data: booking,
+  });
+});
+
+export const getProviderVerificationQueue = catchAsync(async (req, res) => {
+  const status = req.query.status?.toString();
+  const filter = { role: "provider" };
+
+  if (status === "not_approved") {
+    filter["adminVerification.status"] = { $ne: "approved" };
+  } else if (
+    ["not_submitted", "pending", "approved", "rejected"].includes(status)
+  ) {
+    filter["adminVerification.status"] = status;
+  }
+
+  const providers = await User.find(filter)
+    .select(providerVerificationSelect)
+    .sort({ updatedAt: -1 });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Provider verification queue fetched successfully",
+    data: providers,
+  });
+});
+
+export const updateProviderVerification = catchAsync(async (req, res) => {
+  const { providerId } = req.params;
+  const { status, rejectionReason = "", notes = "" } = req.body || {};
+
+  if (!["pending", "approved", "rejected"].includes(status)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid verification status");
+  }
+
+  const provider = await User.findOne({ _id: providerId, role: "provider" });
+  if (!provider) {
+    throw new AppError(httpStatus.NOT_FOUND, "Provider not found");
+  }
+
+  provider.adminVerification = {
+    ...provider.adminVerification?.toObject?.(),
+    status,
+    reviewedBy: req.user._id,
+    reviewedAt: new Date(),
+    rejectionReason: status === "rejected" ? rejectionReason.toString().trim() : "",
+    notes: notes.toString().trim(),
+  };
+
+  if (status === "approved" || status === "rejected") {
+    provider.identityVerification.status = status;
+  }
+
+  if (status !== "approved") {
+    provider.isOnline = false;
+    provider.isBusy = false;
+  }
+
+  await provider.save();
+  await recordActivity({
+    req,
+    action: "provider.verification_updated",
+    entityType: "user",
+    entityId: provider._id,
+    metadata: { status, rejectionReason, notes },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Provider verification updated successfully",
+    data: provider,
+  });
+});
+
+export const updateUserAccountStatus = catchAsync(async (req, res) => {
+  const { userId } = req.params;
+  const { accountStatus } = req.body || {};
+
+  if (!["active", "disabled"].includes(accountStatus)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid account status");
+  }
+
+  const user = await User.findById(userId);
+  if (!user) {
+    throw new AppError(httpStatus.NOT_FOUND, "User not found");
+  }
+
+  user.accountStatus = accountStatus;
+  await user.save();
+  await recordActivity({
+    req,
+    action: "user.account_status_updated",
+    entityType: "user",
+    entityId: user._id,
+    metadata: { accountStatus },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Account status updated successfully",
+    data: user,
+  });
+});
+
+export const updateProviderEnforcement = catchAsync(async (req, res) => {
+  const { providerId } = req.params;
+  const { status, reason = "" } = req.body || {};
+
+  if (!["clear", "warned", "suspended", "banned"].includes(status)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid enforcement status");
+  }
+
+  const provider = await User.findOne({ _id: providerId, role: "provider" });
+  if (!provider) {
+    throw new AppError(httpStatus.NOT_FOUND, "Provider not found");
+  }
+
+  provider.enforcement = {
+    status,
+    reason: reason.toString().trim(),
+    updatedBy: req.user._id,
+    updatedAt: new Date(),
+  };
+
+  if (["suspended", "banned"].includes(status)) {
+    provider.isOnline = false;
+  }
+
+  await provider.save();
+  await recordActivity({
+    req,
+    action: "provider.enforcement_updated",
+    entityType: "user",
+    entityId: provider._id,
+    metadata: { status, reason },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Provider enforcement updated successfully",
+    data: provider,
+  });
+});
+
+export const getAdminServicesPricing = catchAsync(async (req, res) => {
+  const catalogServices = await ensureDefaultServices();
+  const providers = await User.find({ role: "provider" })
+    .select("_id name email serviceArea accountStatus adminVerification")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  await Promise.all(providers.map((provider) => ensureProviderServices(provider._id)));
+
+  const providerServices = await Service.find({
+    provider: { $ne: null },
+    catalogKey: { $exists: true },
+  })
+    .populate("provider", "_id name email serviceArea")
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const countsByProvider = providerServices.reduce((map, service) => {
+    const providerId = service.provider?._id?.toString() || service.provider?.toString();
+    if (!providerId) return map;
+
+    const current = map.get(providerId) || { total: 0, active: 0, inactive: 0 };
+    current.total += 1;
+    if (service.isActive) current.active += 1;
+    else current.inactive += 1;
+    map.set(providerId, current);
+    return map;
+  }, new Map());
+
+  const providerSummaries = providers.map((provider) => ({
+    provider,
+    counts: countsByProvider.get(provider._id.toString()) || {
+      total: 0,
+      active: 0,
+      inactive: 0,
+    },
+  }));
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Services and pricing fetched successfully",
+    data: {
+      catalogServices,
+      providerSummaries,
+      providerServices,
+    },
+  });
+});
+
+export const updateAdminCatalogService = catchAsync(async (req, res) => {
+  const { serviceId } = req.params;
+  const service = await Service.findOne({ _id: serviceId, ...globalServiceFilter });
+
+  if (!service) {
+    throw new AppError(httpStatus.NOT_FOUND, "Catalog service not found");
+  }
+
+  serviceEditableFields.forEach((field) => {
+    if (req.body?.[field] !== undefined) {
+      service[field] = field === "price" ? asMoney(req.body[field]) : req.body[field];
+    }
+  });
+
+  if (!service.price || service.price <= 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Service price must be greater than 0");
+  }
+
+  await service.save();
+
+  const providerUpdate = {
+    serviceType: service.serviceType,
+    title: service.title,
+    price: service.price,
+    carSize: service.carSize,
+    carName: service.carName,
+    carModel: service.carModel,
+    description: service.description,
+  };
+
+  if (service.isActive === false) {
+    providerUpdate.isActive = false;
+  }
+
+  const providerServices = await Service.find({ catalogKey: service.catalogKey, provider: { $ne: null } });
+  const providerIds = [...new Set(providerServices.map((item) => item.provider?.toString()).filter(Boolean))];
+
+  await Service.updateMany(
+    { catalogKey: service.catalogKey, provider: { $ne: null } },
+    { $set: providerUpdate }
+  );
+  await Promise.all(providerIds.map((providerId) => syncProviderPreferredServices(providerId)));
+
+  await recordActivity({
+    req,
+    action: "service_catalog.updated",
+    entityType: "service",
+    entityId: service._id,
+    metadata: {
+      catalogKey: service.catalogKey,
+      title: service.title,
+      price: service.price,
+      providerServicesUpdated: providerServices.length,
+    },
+  });
+
+  broadcast("admin_services_pricing_updated", {
+    serviceId: service._id,
+    catalogKey: service.catalogKey,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Catalog service updated successfully",
+    data: service,
+  });
+});
+
+export const updateAdminProviderService = catchAsync(async (req, res) => {
+  const { providerId, serviceId } = req.params;
+  const service = await Service.findOne({
+    _id: serviceId,
+    provider: providerId,
+  });
+
+  if (!service) {
+    throw new AppError(httpStatus.NOT_FOUND, "Provider service not found");
+  }
+
+  if (req.body?.isActive !== undefined) {
+    service.isActive = Boolean(req.body.isActive);
+  }
+
+  await service.save();
+  await syncProviderPreferredServices(providerId);
+
+  await recordActivity({
+    req,
+    action: "provider_service.updated",
+    entityType: "service",
+    entityId: service._id,
+    metadata: {
+      providerId,
+      catalogKey: service.catalogKey,
+      isActive: service.isActive,
+    },
+  });
+
+  broadcast("admin_services_pricing_updated", {
+    serviceId: service._id,
+    providerId,
+    isActive: service.isActive,
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Provider service updated successfully",
+    data: service,
+  });
+});
+
+export const getAdminReports = catchAsync(async (req, res) => {
+  const { status, type, limit = 50, page = 1 } = req.query;
+  const filter = dateFilter("createdAt", req.query);
+
+  if (status && ["open", "reviewing", "resolved", "dismissed"].includes(status)) {
+    filter.status = status;
+  }
+  if (type && REPORT_TYPES.includes(type)) {
+    filter.type = type;
+  }
+
+  const pageNumber = Math.max(Number(page) || 1, 1);
+  const pageSize = Math.min(Math.max(Number(limit) || 50, 1), 100);
+
+  const [items, total] = await Promise.all([
+    IssueReport.find(filter)
+      .populate("reporter", "_id name email role phoneNumber photo")
+      .populate("reportedUser", "_id name email role phoneNumber photo")
+      .populate("booking", "_id status finalPrice bookingDate")
+      .populate("assignedTo", "_id name email role")
+      .sort({ createdAt: -1 })
+      .skip((pageNumber - 1) * pageSize)
+      .limit(pageSize),
+    IssueReport.countDocuments(filter),
+  ]);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Reports fetched successfully",
+    data: {
+      items,
+      pagination: {
+        page: pageNumber,
+        limit: pageSize,
+        total,
+        pages: Math.ceil(total / pageSize),
+      },
+    },
+  });
+});
+
+export const getAdminReportPhoto = catchAsync(async (req, res) => {
+  const { reportId } = req.params;
+  if (!mongoose.Types.ObjectId.isValid(reportId)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid report id");
+  }
+
+  const report = await IssueReport.findById(reportId).select("photo").lean();
+  const photoUrl = report?.photo?.url?.toString().trim();
+  if (!photoUrl) {
+    throw new AppError(httpStatus.NOT_FOUND, "Report photo not found");
+  }
+
+  const localPath = resolveLocalUploadPath(photoUrl);
+  if (localPath) {
+    if (!fs.existsSync(localPath)) {
+      throw new AppError(
+        httpStatus.NOT_FOUND,
+        "Report photo file is no longer available on the server"
+      );
+    }
+
+    const extension = path.extname(localPath).toLowerCase();
+    res.setHeader("Content-Type", IMAGE_CONTENT_TYPES[extension] || "application/octet-stream");
+    res.setHeader("Cache-Control", "private, max-age=300");
+    return res.sendFile(localPath);
+  }
+
+  if (!/^https?:\/\//i.test(photoUrl)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Unsupported report photo source");
+  }
+
+  const response = await fetch(photoUrl);
+  if (!response.ok) {
+    throw new AppError(httpStatus.BAD_GATEWAY, "Unable to load report photo");
+  }
+
+  const contentType = response.headers.get("content-type") || "application/octet-stream";
+  if (!contentType.toLowerCase().startsWith("image/")) {
+    throw new AppError(httpStatus.BAD_GATEWAY, "Report photo source is not an image");
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  res.setHeader("Content-Type", contentType);
+  res.setHeader("Cache-Control", "private, max-age=300");
+  return res.status(httpStatus.OK).send(Buffer.from(arrayBuffer));
+});
+
+export const updateAdminReportStatus = catchAsync(async (req, res) => {
+  const { reportId } = req.params;
+  const { status, resolutionNote = "", assignedTo = null } = req.body || {};
+
+  if (!["open", "reviewing", "resolved", "dismissed"].includes(status)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid report status");
+  }
+
+  const report = await IssueReport.findById(reportId);
+  if (!report) {
+    throw new AppError(httpStatus.NOT_FOUND, "Report not found");
+  }
+
+  report.status = status;
+  report.resolutionNote = resolutionNote.toString().trim();
+  report.updatedBy = req.user._id;
+
+  if (assignedTo && mongoose.Types.ObjectId.isValid(assignedTo)) {
+    const assignee = await User.findOne({
+      _id: assignedTo,
+      role: { $in: DASHBOARD_ROLES },
+    });
+    if (!assignee) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Assigned user is not dashboard staff");
+    }
+    report.assignedTo = assignee._id;
+  }
+
+  await report.save();
+  await recordActivity({
+    req,
+    action: "report.status_updated",
+    entityType: "issue_report",
+    entityId: report._id,
+    metadata: { status, assignedTo, resolutionNote },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Report updated successfully",
+    data: report,
+  });
+});
+
+export const getStaffAccounts = catchAsync(async (req, res) => {
+  const staff = await User.find(mergeFilter({ role: "staff" }, "createdAt", req.query))
+    .select(dashboardUserSelect)
+    .sort({
+      createdAt: -1,
+    });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Staff accounts fetched successfully",
+    data: staff,
+  });
+});
+
+export const createStaffAccount = catchAsync(async (req, res) => {
+  const { name = "", email, password, staffPermissions = {} } = req.body || {};
+
+  if (!email || !password) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Email and password are required");
+  }
+
+  const existing = await User.findOne({ email: email.toString().trim().toLowerCase() });
+  if (existing) {
+    throw new AppError(httpStatus.CONFLICT, "User already exists");
+  }
+
+  const staff = await User.create({
+    name,
+    email,
+    password,
+    role: "staff",
+    accountStatus: "active",
+    staffPermissions: {
+      menus: Array.isArray(staffPermissions.menus)
+        ? staffPermissions.menus.filter((menu) => STAFF_MENUS.includes(menu))
+        : ["bookings"],
+      actions: Array.isArray(staffPermissions.actions)
+        ? staffPermissions.actions
+        : ["booking.status.update"],
+    },
+    verificationInfo: {
+      verified: true,
+      token: "",
+    },
+    isEmailVerified: true,
+  });
+
+  await recordActivity({
+    req,
+    action: "staff.created",
+    entityType: "user",
+    entityId: staff._id,
+    metadata: { email: staff.email },
+  });
+
+  const data = await User.findById(staff._id).select(dashboardUserSelect);
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: "Staff account created successfully",
+    data,
+  });
+});
+
+export const updateStaffAccount = catchAsync(async (req, res) => {
+  const { staffId } = req.params;
+  const { name, accountStatus, staffPermissions } = req.body || {};
+
+  const staff = await User.findOne({ _id: staffId, role: "staff" });
+  if (!staff) {
+    throw new AppError(httpStatus.NOT_FOUND, "Staff account not found");
+  }
+
+  if (name !== undefined) staff.name = name.toString().trim();
+  if (accountStatus !== undefined) {
+    if (!["active", "disabled"].includes(accountStatus)) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Invalid account status");
+    }
+    staff.accountStatus = accountStatus;
+  }
+  if (staffPermissions !== undefined) {
+    staff.staffPermissions = {
+      menus: Array.isArray(staffPermissions.menus)
+        ? staffPermissions.menus.filter((menu) => STAFF_MENUS.includes(menu))
+        : staff.staffPermissions?.menus || ["bookings"],
+      actions: Array.isArray(staffPermissions.actions)
+        ? staffPermissions.actions
+        : staff.staffPermissions?.actions || ["booking.status.update"],
+    };
+  }
+
+  await staff.save();
+  await recordActivity({
+    req,
+    action: "staff.updated",
+    entityType: "user",
+    entityId: staff._id,
+    metadata: { name, accountStatus },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Staff account updated successfully",
+    data: staff,
+  });
+});
+
+export const disableStaffAccount = catchAsync(async (req, res) => {
+  const { staffId } = req.params;
+
+  const staff = await User.findOne({ _id: staffId, role: "staff" });
+  if (!staff) {
+    throw new AppError(httpStatus.NOT_FOUND, "Staff account not found");
+  }
+
+  staff.accountStatus = "disabled";
+  await staff.save();
+  await recordActivity({
+    req,
+    action: "staff.disabled",
+    entityType: "user",
+    entityId: staff._id,
+    metadata: { email: staff.email },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Staff access disabled successfully",
+    data: staff,
+  });
+});
+
+export const deleteStaffAccount = catchAsync(async (req, res) => {
+  const { staffId } = req.params;
+
+  const staff = await User.findOne({ _id: staffId, role: "staff" });
+  if (!staff) {
+    throw new AppError(httpStatus.NOT_FOUND, "Staff account not found");
+  }
+
+  await User.deleteOne({ _id: staff._id, role: "staff" });
+  await recordActivity({
+    req,
+    action: "staff.deleted",
+    entityType: "user",
+    entityId: staff._id,
+    metadata: { email: staff.email },
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Staff account deleted successfully",
+    data: { staffId },
+  });
+});
+
+export const getActivityLogs = catchAsync(async (req, res) => {
+  const { action, limit = 100 } = req.query;
+  const filter = dateFilter("createdAt", req.query);
+  if (action) filter.action = action;
+
+  const logs = await ActivityLog.find(filter)
+    .populate("actor", "_id name email role")
+    .sort({ createdAt: -1 })
+    .limit(Math.min(Number(limit) || 100, 200));
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Activity logs fetched successfully",
+    data: logs,
+  });
+});
+
+export const getAdminPayments = catchAsync(async (req, res) => {
+  const { status, type, limit = 100 } = req.query;
+  const filter = dateFilter("createdAt", req.query);
+
+  if (status && ["success", "failed", "pending"].includes(status)) {
+    filter.status = status;
+  }
+  if (type && ["booking", "tips", "donation"].includes(type)) {
+    filter.type = type;
+  }
+
+  const payments = await paymentInfo
+    .find(filter)
+    .populate("userId", "_id name email role")
+    .populate("providerId", "_id name email role")
+    .populate("bookingId", "_id status finalPrice bookingDate")
+    .sort({ createdAt: -1 })
+    .limit(Math.min(Number(limit) || 100, 200));
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Payments fetched successfully",
+    data: payments,
+  });
+});
+
+export const getAdminEarnings = catchAsync(async (req, res) => {
+  const now = new Date();
+  const todayStart = startOfDay(now);
+  const weekStart = startOfWeek(now);
+  const monthStart = startOfMonth(now);
+  const settings = await getPlatformSettingsDoc();
+  const commissionRate = Number(settings.commissionRate) || 0.25;
+  const completedRangeFilter = dateFilter("completedAt", req.query);
+
+  const [bookings, paidPayoutsAgg] = await Promise.all([
+    Booking.find({ status: "completed", ...completedRangeFilter })
+      .populate("user", "_id name email")
+      .populate("provider", "_id name email")
+      .populate("service", "_id title serviceType")
+      .sort({ completedAt: -1, updatedAt: -1 })
+      .limit(300)
+      .lean(),
+    Payout.aggregate([
+      { $match: { status: "paid", ...dateFilter("createdAt", req.query) } },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]),
+  ]);
+
+  const entries = bookings.map((booking) => {
+    const grossAmount = asMoney(booking.finalPrice);
+    const commissionAmount = asMoney(grossAmount * commissionRate);
+    const netAmount = asMoney(grossAmount - commissionAmount);
+
+    return {
+      bookingId: booking._id,
+      date: booking.completedAt || booking.updatedAt,
+      customer: booking.user,
+      provider: booking.provider,
+      service: booking.service,
+      grossAmount,
+      commissionRate,
+      commissionAmount,
+      netAmount,
+      currency: booking.currency || "GBP",
+      status: "available",
+    };
+  });
+
+  const sumEntries = (predicate) =>
+    entries
+      .filter(predicate)
+      .reduce(
+        (totals, entry) => ({
+          grossAmount: asMoney(totals.grossAmount + entry.grossAmount),
+          commissionAmount: asMoney(totals.commissionAmount + entry.commissionAmount),
+          netAmount: asMoney(totals.netAmount + entry.netAmount),
+        }),
+        { grossAmount: 0, commissionAmount: 0, netAmount: 0 }
+      );
+
+  const totalNet = entries.reduce((sum, entry) => sum + entry.netAmount, 0);
+  const totalCommission = entries.reduce((sum, entry) => sum + entry.commissionAmount, 0);
+  const paidOut = asMoney(paidPayoutsAgg[0]?.total);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Earnings fetched successfully",
+    data: {
+      commissionRate,
+      summary: {
+        today: sumEntries((entry) => new Date(entry.date) >= todayStart),
+        week: sumEntries((entry) => new Date(entry.date) >= weekStart),
+        month: sumEntries((entry) => new Date(entry.date) >= monthStart),
+        period: sumEntries(() => true),
+        netProfit: asMoney(totalCommission),
+        pendingNet: asMoney(Math.max(totalNet - paidOut, 0)),
+        paidOut,
+      },
+      entries,
+    },
+  });
+});
+
+export const getAdminPayouts = catchAsync(async (req, res) => {
+  const settings = await getPlatformSettingsDoc();
+  const commissionRate = Number(settings.commissionRate) || 0.25;
+  const payoutRangeFilter = dateFilter("createdAt", req.query);
+  const completedRangeFilter = dateFilter("completedAt", req.query);
+  const [payouts, earningsData, payoutBalanceData, stripeBalance] = await Promise.all([
+    Payout.find(payoutRangeFilter)
+      .populate("provider", "_id name email stripeConnect")
+      .populate("createdBy", "_id name email role")
+      .populate("updatedBy", "_id name email role")
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .lean(),
+    Booking.aggregate([
+      { $match: { status: "completed", ...completedRangeFilter } },
+      {
+        $group: {
+          _id: "$provider",
+          grossAmount: { $sum: "$finalPrice" },
+          jobs: { $sum: 1 },
+        },
+      },
+      { $sort: { grossAmount: -1 } },
+    ]),
+    Payout.aggregate([
+      {
+        $match: {
+          status: { $ne: "failed" },
+          ...payoutRangeFilter,
+        },
+      },
+      {
+        $group: {
+          _id: "$provider",
+          paidOut: {
+            $sum: {
+              $cond: [{ $eq: ["$status", "paid"] }, "$amount", 0],
+            },
+          },
+          pendingOut: {
+            $sum: {
+              $cond: [
+                { $in: ["$status", ["pending", "processing"]] },
+                "$amount",
+                0,
+              ],
+            },
+          },
+        },
+      },
+    ]),
+    getStripeBalanceSnapshot(),
+  ]);
+
+  const providers = await User.find({
+    _id: { $in: earningsData.map((entry) => entry._id).filter(Boolean) },
+  })
+    .select("_id name email stripeConnect")
+    .lean();
+  const providerMap = new Map(providers.map((provider) => [provider._id.toString(), provider]));
+  const payoutBalanceMap = new Map(
+    payoutBalanceData.map((entry) => [
+      entry._id?.toString(),
+      {
+        paidOut: asMoney(entry.paidOut),
+        pendingOut: asMoney(entry.pendingOut),
+      },
+    ])
+  );
+
+  const providerBalances = earningsData.map((entry) => {
+    const providerId = entry._id?.toString();
+    const grossAmount = asMoney(entry.grossAmount);
+    const commissionAmount = asMoney(grossAmount * commissionRate);
+    const netAmount = asMoney(grossAmount - commissionAmount);
+    const payoutTotals = payoutBalanceMap.get(providerId) || {
+      paidOut: 0,
+      pendingOut: 0,
+    };
+
+    return {
+      provider: providerId ? providerMap.get(providerId) : null,
+      jobs: entry.jobs,
+      grossAmount,
+      commissionAmount,
+      netAmount,
+      paidOut: payoutTotals.paidOut,
+      pendingOut: payoutTotals.pendingOut,
+      payableAmount: asMoney(Math.max(netAmount - payoutTotals.paidOut, 0)),
+    };
+  });
+
+  const statusTotals = payouts.reduce(
+    (totals, payout) => {
+      totals[payout.status] = asMoney((totals[payout.status] || 0) + payout.amount);
+      return totals;
+    },
+    { pending: 0, processing: 0, paid: 0, failed: 0 }
+  );
+  const manualTotals = providerBalances.reduce(
+    (totals, balance) => ({
+      unpaidAmount: asMoney(totals.unpaidAmount + balance.payableAmount),
+      paidAmount: asMoney(totals.paidAmount + balance.paidOut),
+      unpaidProviders: totals.unpaidProviders + (balance.payableAmount > 0 ? 1 : 0),
+      paidProviders: totals.paidProviders + (balance.payableAmount <= 0 && balance.netAmount > 0 ? 1 : 0),
+    }),
+    { unpaidAmount: 0, paidAmount: 0, unpaidProviders: 0, paidProviders: 0 }
+  );
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Payouts fetched successfully",
+    data: {
+      payouts,
+      providerBalances,
+      statusTotals,
+      manualTotals,
+      commissionRate,
+      stripe: {
+        dashboardUrl: settings.stripeDashboardUrl,
+        accountId: settings.stripeAccountId,
+        payoutsEnabled: Boolean(settings.stripePayoutsEnabled),
+        balance: stripeBalance,
+      },
+    },
+  });
+});
+
+export const createAdminPayout = catchAsync(async (req, res) => {
+  const {
+    providerId,
+    amount,
+    currency = "GBP",
+    payoutDate,
+    status = "paid",
+    manualAdjustmentReason = "",
+  } = req.body || {};
+  const payoutAmount = asMoney(amount);
+  const payoutCurrency = currency.toString().trim().toUpperCase() || "GBP";
+
+  if (!mongoose.Types.ObjectId.isValid(providerId)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid providerId");
+  }
+
+  if (!payoutAmount || payoutAmount <= 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Payout amount must be greater than 0");
+  }
+
+  if (!["pending", "processing", "paid", "failed"].includes(status)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid payout status");
+  }
+
+  const provider = await User.findById(providerId);
+  if (!provider) {
+    throw new AppError(httpStatus.NOT_FOUND, "Provider record not found");
+  }
+
+  const settings = await getPlatformSettingsDoc();
+  const commissionRate = Number(settings.commissionRate) || 0.25;
+  const [grossAgg, allocatedAgg] = await Promise.all([
+    Booking.aggregate([
+      { $match: { provider: provider._id, status: "completed" } },
+      { $group: { _id: null, total: { $sum: "$finalPrice" } } },
+    ]),
+    Payout.aggregate([
+      {
+        $match: {
+          provider: provider._id,
+          status: "paid",
+        },
+      },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]),
+  ]);
+  const grossAmount = asMoney(grossAgg[0]?.total);
+  const netEarned = asMoney(grossAmount * (1 - commissionRate));
+  const alreadyAllocated = asMoney(allocatedAgg[0]?.total);
+  const payableAmount = asMoney(Math.max(netEarned - alreadyAllocated, 0));
+
+  if (payoutAmount > payableAmount) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      `Payout exceeds provider available 75% earnings balance (${payoutCurrency} ${payableAmount.toFixed(2)})`
+    );
+  }
+
+  const payout = await Payout.create({
+    provider: provider._id,
+    amount: payoutAmount,
+    currency: payoutCurrency,
+    status,
+    payoutDate: payoutDate ? new Date(payoutDate) : undefined,
+    paidAt: status === "paid" ? new Date() : undefined,
+    stripeDestinationAccountId: "",
+    stripeMode: "manual",
+    manualAdjustmentReason:
+      manualAdjustmentReason?.toString?.().trim() ||
+      "Manual provider salary marked paid by admin",
+    createdBy: req.user._id,
+    updatedBy: req.user._id,
+  });
+
+  await recordActivity({
+    req,
+    action: "payout.created",
+    entityType: "payout",
+    entityId: payout._id,
+    metadata: {
+      providerId,
+      amount: payoutAmount,
+      status: payout.status,
+      stripeMode: "manual",
+    },
+  });
+  broadcast("admin_payout_updated", { payoutId: payout._id, status: payout.status });
+
+  const data = await Payout.findById(payout._id)
+    .populate("provider", "_id name email stripeConnect")
+    .lean();
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: "Payout created successfully",
+    data,
+  });
+});
+
+export const updateAdminPayoutStatus = catchAsync(async (req, res) => {
+  const { payoutId } = req.params;
+  const { status, failureReason = "" } = req.body || {};
+
+  if (!["pending", "processing", "paid", "failed"].includes(status)) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Invalid payout status");
+  }
+
+  const payout = await Payout.findById(payoutId);
+  if (!payout) {
+    throw new AppError(httpStatus.NOT_FOUND, "Payout not found");
+  }
+
+  payout.status = status;
+  payout.failureReason = status === "failed" ? failureReason.toString().trim() : "";
+  payout.paidAt = status === "paid" ? new Date() : payout.paidAt;
+  payout.updatedBy = req.user._id;
+  await payout.save();
+
+  await recordActivity({
+    req,
+    action: "payout.status_updated",
+    entityType: "payout",
+    entityId: payout._id,
+    metadata: { status, failureReason },
+  });
+  broadcast("admin_payout_updated", { payoutId: payout._id, status: payout.status });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Payout updated successfully",
+    data: payout,
+  });
+});
+
+export const getAdminCommissionWithdrawals = catchAsync(async (req, res) => {
+  const settings = await getPlatformSettingsDoc();
+  const commissionRate = Number(settings.commissionRate) || 0.25;
+  const withdrawalRangeFilter = dateFilter("createdAt", req.query);
+
+  const [
+    periodCompletedAgg,
+    allCompletedAgg,
+    periodWithdrawnAgg,
+    allWithdrawnAgg,
+    withdrawals,
+    stripeBalance,
+  ] = await Promise.all([
+    Booking.aggregate([
+      { $match: { status: "completed", ...dateFilter("completedAt", req.query) } },
+      { $group: { _id: null, total: { $sum: "$finalPrice" } } },
+    ]),
+    Booking.aggregate([
+      { $match: { status: "completed" } },
+      { $group: { _id: null, total: { $sum: "$finalPrice" } } },
+    ]),
+    AdminWithdrawal.aggregate([
+      { $match: { status: { $ne: "failed" }, ...withdrawalRangeFilter } },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]),
+    AdminWithdrawal.aggregate([
+      { $match: { status: { $ne: "failed" } } },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]),
+    AdminWithdrawal.find(withdrawalRangeFilter)
+      .populate("requestedBy", "_id name email role")
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean(),
+    getStripeBalanceSnapshot(),
+  ]);
+
+  const periodCommission = asMoney((periodCompletedAgg[0]?.total || 0) * commissionRate);
+  const allCommission = asMoney((allCompletedAgg[0]?.total || 0) * commissionRate);
+  const periodWithdrawn = asMoney(periodWithdrawnAgg[0]?.total);
+  const allWithdrawn = asMoney(allWithdrawnAgg[0]?.total);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Admin commission withdrawals fetched successfully",
+    data: {
+      summary: {
+        commissionRate,
+        periodCommission,
+        periodWithdrawn,
+        availableCommission: asMoney(Math.max(allCommission - allWithdrawn, 0)),
+        allCommission,
+        allWithdrawn,
+      },
+      stripe: {
+        dashboardUrl: settings.stripeDashboardUrl,
+        accountId: settings.stripeAccountId,
+        payoutsEnabled: Boolean(settings.stripePayoutsEnabled),
+        balance: stripeBalance,
+      },
+      withdrawals,
+    },
+  });
+});
+
+export const createAdminCommissionWithdrawal = catchAsync(async (req, res) => {
+  const settings = await getPlatformSettingsDoc();
+  const commissionRate = Number(settings.commissionRate) || 0.25;
+  const amount = asMoney(req.body?.amount);
+  const currency = req.body?.currency?.toString().trim().toUpperCase() || "GBP";
+
+  if (!amount || amount <= 0) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Withdrawal amount must be greater than 0");
+  }
+
+  const [allCompletedAgg, allWithdrawnAgg] = await Promise.all([
+    Booking.aggregate([
+      { $match: { status: "completed" } },
+      { $group: { _id: null, total: { $sum: "$finalPrice" } } },
+    ]),
+    AdminWithdrawal.aggregate([
+      { $match: { status: { $ne: "failed" } } },
+      { $group: { _id: null, total: { $sum: "$amount" } } },
+    ]),
+  ]);
+
+  const allCommission = asMoney((allCompletedAgg[0]?.total || 0) * commissionRate);
+  const allWithdrawn = asMoney(allWithdrawnAgg[0]?.total);
+  const availableCommission = asMoney(Math.max(allCommission - allWithdrawn, 0));
+
+  if (amount > availableCommission) {
+    throw new AppError(httpStatus.BAD_REQUEST, "Withdrawal amount exceeds available commission");
+  }
+
+  const withdrawal = await AdminWithdrawal.create({
+    amount,
+    currency,
+    status: "requested",
+    stripeAccountId: settings.stripeAccountId || "",
+    stripeDashboardUrl: settings.stripeDashboardUrl || "https://dashboard.stripe.com/",
+    requestedBy: req.user._id,
+  });
+
+  if (settings.stripePayoutsEnabled) {
+    if (!process.env.STRIPE_SECRET_KEY) {
+      withdrawal.status = "failed";
+      withdrawal.failureReason = "STRIPE_SECRET_KEY is not configured";
+      await withdrawal.save();
+      throw new AppError(httpStatus.BAD_REQUEST, "Stripe secret key is not configured");
+    }
+
+    try {
+      const payout = await getStripe().payouts.create({
+        amount: Math.round(amount * 100),
+        currency: currency.toLowerCase(),
+        metadata: {
+          source: "owvo_admin_commission",
+          withdrawalId: withdrawal._id.toString(),
+          requestedBy: req.user._id.toString(),
+        },
+      });
+
+      withdrawal.stripePayoutId = payout.id;
+      withdrawal.status = payout.status === "paid" ? "paid" : "processing";
+      await withdrawal.save();
+    } catch (error) {
+      withdrawal.status = "failed";
+      withdrawal.failureReason = error?.message || "Stripe payout failed";
+      await withdrawal.save();
+      throw new AppError(httpStatus.BAD_REQUEST, withdrawal.failureReason);
+    }
+  }
+
+  await recordActivity({
+    req,
+    action: "admin_commission.withdrawal_requested",
+    entityType: "admin_withdrawal",
+    entityId: withdrawal._id,
+    metadata: {
+      amount,
+      currency,
+      status: withdrawal.status,
+      stripePayoutId: withdrawal.stripePayoutId,
+    },
+  });
+  broadcast("admin_payout_updated", { withdrawalId: withdrawal._id, status: withdrawal.status });
+
+  const data = await AdminWithdrawal.findById(withdrawal._id)
+    .populate("requestedBy", "_id name email role")
+    .lean();
+
+  sendResponse(res, {
+    statusCode: httpStatus.CREATED,
+    success: true,
+    message: "Admin commission withdrawal recorded successfully",
+    data,
+  });
+});
+
+export const getAdminNotifications = catchAsync(async (req, res) => {
+  const createdRangeFilter = dateFilter("createdAt", req.query);
+  const updatedRangeFilter = dateFilter("updatedAt", req.query);
+  const labelFromValue = (value, fallback = "general") =>
+    String(value || fallback)
+      .replace(/[_-]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  const shortId = (value) => value?.toString?.().slice(-6).toUpperCase() || "UNKNOWN";
+  const dateValue = (value) => {
+    const date = value ? new Date(value) : null;
+    return date && !Number.isNaN(date.getTime()) ? date : new Date(0);
+  };
+
+  const [bookings, reports, payments, logs] = await Promise.all([
+    Booking.find(updatedRangeFilter)
+      .select("_id status finalPrice createdAt updatedAt")
+      .sort({ updatedAt: -1, createdAt: -1 })
+      .limit(8)
+      .lean(),
+    IssueReport.find(createdRangeFilter)
+      .select("_id type status description createdAt")
+      .sort({ createdAt: -1 })
+      .limit(8)
+      .lean(),
+    paymentInfo.find(createdRangeFilter).select("_id status type price currency createdAt").sort({ createdAt: -1 }).limit(8).lean(),
+    ActivityLog.find(createdRangeFilter).select("_id action entityType createdAt").sort({ createdAt: -1 }).limit(8).lean(),
+  ]);
+
+  const notifications = [
+    ...bookings.map((booking) => ({
+      id: `booking-${booking._id}`,
+      type: "booking",
+      title: "Booking activity",
+      message: `Booking ${shortId(booking._id)} is ${labelFromValue(booking.status, "updated")}`,
+      createdAt: booking.updatedAt || booking.createdAt,
+      severity: booking.status === "cancelled" ? "warning" : "info",
+    })),
+    ...reports.map((report) => ({
+      id: `report-${report._id}`,
+      type: "report",
+      title: "New report activity",
+      message: `${labelFromValue(report.type)} report is ${labelFromValue(report.status, "open")}`,
+      createdAt: report.createdAt,
+      severity: report.status === "open" ? "warning" : "info",
+    })),
+    ...payments.map((payment) => ({
+      id: `payment-${payment._id}`,
+      type: "payment",
+      title: "Payment activity",
+      message: `${labelFromValue(payment.type, "booking")} payment ${labelFromValue(payment.status, "updated")} for ${payment.currency || "GBP"} ${Number(payment.price || 0).toFixed(2)}`,
+      createdAt: payment.createdAt,
+      severity: payment.status === "failed" ? "danger" : "success",
+    })),
+    ...logs.map((log) => ({
+      id: `log-${log._id}`,
+      type: "system",
+      title: "System log",
+      message: `${labelFromValue(log.action, "activity")} on ${labelFromValue(log.entityType, "system")}`,
+      createdAt: log.createdAt,
+      severity: "info",
+    })),
+  ].sort((a, b) => dateValue(b.createdAt) - dateValue(a.createdAt));
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Notifications fetched successfully",
+    data: notifications.slice(0, 30),
+  });
+});
+
+export const getDashboardSettings = catchAsync(async (req, res) => {
+  const settings = await getPlatformSettingsDoc();
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Dashboard settings fetched successfully",
+    data: settings,
+  });
+});
+
+export const updateDashboardSettings = catchAsync(async (req, res) => {
+  const settings = await getPlatformSettingsDoc();
+  const {
+    commissionRate,
+    providerVerificationRequired,
+    autoPayoutEnabled,
+    nextPayoutDay,
+    supportEmail,
+    stripeDashboardUrl,
+    stripeAccountId,
+    stripePayoutsEnabled,
+  } = req.body || {};
+
+  if (commissionRate !== undefined) {
+    const parsedRate = Number(commissionRate);
+    if (!Number.isFinite(parsedRate) || parsedRate < 0 || parsedRate > 1) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Commission rate must be between 0 and 1");
+    }
+    settings.commissionRate = parsedRate;
+  }
+  if (providerVerificationRequired !== undefined) {
+    settings.providerVerificationRequired = Boolean(providerVerificationRequired);
+  }
+  if (autoPayoutEnabled !== undefined) {
+    settings.autoPayoutEnabled = Boolean(autoPayoutEnabled);
+  }
+  if (nextPayoutDay !== undefined) settings.nextPayoutDay = nextPayoutDay.toString().trim();
+  if (supportEmail !== undefined) settings.supportEmail = supportEmail.toString().trim();
+  if (stripeDashboardUrl !== undefined) {
+    settings.stripeDashboardUrl = stripeDashboardUrl.toString().trim();
+  }
+  if (stripeAccountId !== undefined) {
+    settings.stripeAccountId = stripeAccountId.toString().trim();
+  }
+  if (stripePayoutsEnabled !== undefined) {
+    settings.stripePayoutsEnabled = Boolean(stripePayoutsEnabled);
+  }
+  settings.updatedBy = req.user._id;
+  await settings.save();
+
+  await recordActivity({
+    req,
+    action: "settings.updated",
+    entityType: "platform_settings",
+    entityId: settings._id,
+    metadata: {
+      commissionRate: settings.commissionRate,
+      providerVerificationRequired: settings.providerVerificationRequired,
+      autoPayoutEnabled: settings.autoPayoutEnabled,
+      stripePayoutsEnabled: settings.stripePayoutsEnabled,
+    },
+  });
+  broadcast("admin_settings_updated", settings);
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Dashboard settings updated successfully",
+    data: settings,
   });
 });

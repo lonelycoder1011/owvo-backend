@@ -5,18 +5,41 @@ import catchAsync from "../utils/catch.Async.js";
 import sendResponse from "../utils/sendResponse.js";
 import { Booking } from "../model/booking.model.js";
 import { IssueReport } from "../model/issueReport.model.js";
+import { uploadOnCloudinary } from "../utils/common.Method.js";
 
-const photoFromFile = (file) => {
+const photoFromFile = async (file) => {
   if (!file) return undefined;
+
+  const cloudinaryConfigured =
+    process.env.CLOUDINARY_CLOUD_NAME &&
+    process.env.CLOUDINARY_API_KEY &&
+    process.env.CLOUDINARY_API_SECRET;
+  const requiresDurableStorage =
+    process.env.NODE_ENV === "production" || process.env.RENDER;
+
+  if (cloudinaryConfigured) {
+    const uploadResult = await uploadOnCloudinary(file.path, "issue_reports");
+    return {
+      public_id: uploadResult.public_id,
+      url: uploadResult.secure_url,
+    };
+  }
+
+  if (requiresDurableStorage) {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      "Cloudinary is required for report photo storage in production."
+    );
+  }
 
   return {
     public_id: file.filename || "",
-    url: file.path || "",
+    url: file.path ? `/${file.path.replace(/\\/g, "/")}` : "",
   };
 };
 
 export const createIssueReport = catchAsync(async (req, res) => {
-  const { bookingId, reportedUserId, description } = req.body || {};
+  const { bookingId, reportedUserId, description, type } = req.body || {};
   const trimmedDescription = description?.toString().trim();
 
   if (!trimmedDescription) {
@@ -62,7 +85,10 @@ export const createIssueReport = catchAsync(async (req, res) => {
     booking: booking?._id || null,
     reportedUser,
     description: trimmedDescription,
-    photo: photoFromFile(req.file),
+    type: ["general", "payment", "service_quality", "safety", "provider_conduct"].includes(type)
+      ? type
+      : "general",
+    photo: await photoFromFile(req.file),
   });
 
   sendResponse(res, {

@@ -41,6 +41,30 @@ const assertWasherPoliciesAccepted = (washer) => {
   }
 };
 
+const assertWasherAdminApproved = (washer) => {
+  if (washer?.adminVerification?.status !== "approved") {
+    const status = washer?.adminVerification?.status || "not_submitted";
+    const message =
+      status === "pending"
+        ? "Your documents are currently under review. You can go online once OWVO verification is complete."
+        : status === "rejected"
+          ? "Your OWVO provider verification was not approved. Please update your documents or contact support."
+          : "Please complete your OWVO provider verification documents. You can go online once admin approval is complete.";
+
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      message
+    );
+  }
+
+  if (["suspended", "banned"].includes(washer?.enforcement?.status)) {
+    throw new AppError(
+      httpStatus.FORBIDDEN,
+      "Your OWVO provider account is restricted. Please contact support."
+    );
+  }
+};
+
 const toWasherSocketPayload = (washer) => ({
   _id: washer._id.toString(),
   name: washer.name,
@@ -242,6 +266,7 @@ export const goOnline = catchAsync(async (req, res) => {
   }
 
   assertWasherPoliciesAccepted(washer);
+  assertWasherAdminApproved(washer);
 
   if (!isProviderAvailableNow(washer)) {
     throw new AppError(
@@ -292,6 +317,7 @@ export const acceptBooking = catchAsync(async (req, res) => {
   }
 
   assertWasherPoliciesAccepted(washer);
+  assertWasherAdminApproved(washer);
 
   const statusMessages = {
     accepted: "Your booking has been accepted!",
@@ -906,6 +932,8 @@ export const getNearbyWashers = catchAsync(async (req, res) => {
   const query = {
     role: "provider",
     isOnline: true,
+    "adminVerification.status": "approved",
+    "enforcement.status": { $nin: ["suspended", "banned"] },
     "policyAcceptance.safetyGuidelinesAccepted": true,
     "policyAcceptance.washerAgreementAccepted": true,
     location: {

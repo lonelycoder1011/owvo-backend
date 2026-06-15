@@ -112,14 +112,26 @@ export const ensureDefaultServices = async () => {
     });
 
     if (service) {
-      Object.assign(service, defaultService, { provider: null });
+      service.catalogKey = service.catalogKey || defaultService.catalogKey;
+      service.serviceType = service.serviceType || defaultService.serviceType;
+      service.title = service.title || defaultService.title;
+      service.price = service.price || defaultService.price;
+      service.carSize = service.carSize || defaultService.carSize;
+      service.carName = service.carName || defaultService.carName;
+      service.carModel = service.carModel || defaultService.carModel;
+      service.description = service.description || defaultService.description;
+      service.isActive = service.isActive !== false;
+      service.provider = null;
       await service.save();
     } else {
       await Service.create({ ...defaultService, provider: null });
     }
   }
 
-  return Service.find({ isActive: true, ...globalServiceFilter }).sort({
+  return Service.find({
+    catalogKey: { $in: currentCatalogKeys },
+    ...globalServiceFilter,
+  }).sort({
     price: 1,
   });
 };
@@ -140,6 +152,9 @@ export const syncProviderPreferredServices = async (providerId) => {
 
 export const ensureProviderServices = async (providerId) => {
   const defaultCatalog = await ensureDefaultServices();
+  const catalogByKey = new Map(
+    defaultCatalog.map((service) => [service.catalogKey, service])
+  );
   let providerServices = await Service.find({ provider: providerId }).sort({
     price: 1,
   });
@@ -153,12 +168,19 @@ export const ensureProviderServices = async (providerId) => {
   );
 
   for (const providerService of providerServices) {
-    const defaultService = findDefaultServiceForPayload(providerService);
+    const defaultService =
+      catalogByKey.get(providerService.catalogKey) ||
+      findDefaultServiceForPayload(providerService);
     if (!defaultService) continue;
 
     const fixedFields = {
+      serviceType: defaultService.serviceType,
       title: defaultService.title,
       price: defaultService.price,
+      carSize: defaultService.carSize,
+      carName: defaultService.carName,
+      carModel: defaultService.carModel,
+      description: defaultService.description,
     };
 
     let changed = false;
@@ -196,7 +218,7 @@ export const ensureProviderServices = async (providerId) => {
         carName: service.carName,
         carModel: service.carModel,
         description: service.description,
-        isActive: true,
+        isActive: service.isActive !== false,
         provider: providerId,
       }))
     );

@@ -19,6 +19,17 @@ export const getProfile = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
 
+  if (
+    user.role === "provider" &&
+    user.isOnline &&
+    (user.adminVerification?.status !== "approved" ||
+      ["suspended", "banned"].includes(user.enforcement?.status))
+  ) {
+    user.isOnline = false;
+    user.isBusy = false;
+    await user.save();
+  }
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
@@ -272,7 +283,6 @@ if (req.files?.insurance?.[0]) {
   const isIdentityCompleted = Boolean(
     user.identityVerification.documentType &&
     user.identityVerification.documentNumber &&
-    user.identityVerification.idFile &&
     user.identityVerification.passportOrDrivingLicenseFile &&
     d.isPrivateProperty &&
     d.hasPermission &&
@@ -295,6 +305,34 @@ if (req.files?.insurance?.[0]) {
     user.bankDetails.sortCode
   );
   user.isBankCompleted = isBankCompleted;
+
+  const hasProviderVerificationDocuments = Boolean(
+    user.role === "provider" &&
+      user.isProfileCompleted &&
+      user.isBankCompleted &&
+      user.photo?.url &&
+      user.identityVerification?.documentType &&
+      user.identityVerification?.documentNumber &&
+      user.identityVerification?.passportOrDrivingLicenseFile?.url
+  );
+
+  if (
+    hasProviderVerificationDocuments &&
+    !["approved", "rejected"].includes(user.adminVerification?.status)
+  ) {
+    user.adminVerification = {
+      ...(user.adminVerification?.toObject?.() || user.adminVerification || {}),
+      status: "pending",
+      reviewedBy: null,
+      reviewedAt: undefined,
+      rejectionReason: "",
+    };
+    user.identityVerification.status = "pending";
+    user.identityVerification.submittedAt =
+      user.identityVerification.submittedAt || new Date();
+    user.isOnline = false;
+    user.isBusy = false;
+  }
 
   // ---------------------------
   // Save user and respond
@@ -546,6 +584,34 @@ export const updateBankDetails = catchAsync(async (req, res) => {
     bd.sortCode;
 
   user.isBankCompleted = Boolean(completed);
+
+  const hasProviderVerificationDocuments = Boolean(
+    user.role === "provider" &&
+      user.isProfileCompleted &&
+      user.isBankCompleted &&
+      user.photo?.url &&
+      user.identityVerification?.documentType &&
+      user.identityVerification?.documentNumber &&
+      user.identityVerification?.passportOrDrivingLicenseFile?.url
+  );
+
+  if (
+    hasProviderVerificationDocuments &&
+    !["approved", "rejected"].includes(user.adminVerification?.status)
+  ) {
+    user.adminVerification = {
+      ...(user.adminVerification?.toObject?.() || user.adminVerification || {}),
+      status: "pending",
+      reviewedBy: null,
+      reviewedAt: undefined,
+      rejectionReason: "",
+    };
+    user.identityVerification.status = "pending";
+    user.identityVerification.submittedAt =
+      user.identityVerification.submittedAt || new Date();
+    user.isOnline = false;
+    user.isBusy = false;
+  }
 
   await user.save();
 

@@ -3,6 +3,7 @@ import AppError from "../errors/AppError.js";
 import { createToken, verifyToken } from "../utils/authToken.js";
 import catchAsync from "../utils/catch.Async.js";
 import { generateOTP } from "../utils/common.Method.js";
+import { recordActivity } from "../utils/activityLog.util.js";
 import { sendEmail } from "../utils/sendEmail.js";
 import sendResponse from "../utils/sendResponse.js";
 import { User } from "./../model/user.model.js";
@@ -174,6 +175,16 @@ export const login = catchAsync(async (req, res) => {
 
   user.refreshToken = refreshToken;
   await user.save();
+
+  if (["admin", "staff"].includes(user.role)) {
+    await recordActivity({
+      req: { ...req, user },
+      action: "dashboard.login",
+      entityType: "user",
+      entityId: user._id,
+      metadata: { email: user.email, role: user.role },
+    });
+  }
 
   res.cookie("refreshToken", refreshToken, {
     secure: true,
@@ -373,6 +384,17 @@ export const logout = catchAsync(async (req, res) => {
     { refreshToken: "" },
     { new: true }
   );
+
+  if (user1 && ["admin", "staff"].includes(user1.role)) {
+    await recordActivity({
+      req: { ...req, user: user1 },
+      action: "dashboard.logout",
+      entityType: "user",
+      entityId: user1._id,
+      metadata: { email: user1.email, role: user1.role },
+    });
+  }
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,

@@ -5,7 +5,6 @@ import catchAsync from "../utils/catch.Async.js";
 import {
   ensureDefaultServices,
   ensureProviderServices,
-  findDefaultServiceForPayload,
   syncProviderPreferredServices,
 } from "../utils/defaultServices.util.js";
 import sendResponse from "../utils/sendResponse.js";
@@ -110,15 +109,7 @@ export const updateService = catchAsync(async (req, res) => {
     );
   }
 
-  const editableFields = [
-    "serviceType",
-    "title",
-    "carSize",
-    "carName",
-    "carModel",
-    "description",
-    "isActive",
-  ];
+  const editableFields = ["isActive"];
 
   editableFields.forEach((field) => {
     if (req.body[field] !== undefined) {
@@ -126,20 +117,15 @@ export const updateService = catchAsync(async (req, res) => {
     }
   });
 
-  const defaultService = findDefaultServiceForPayload(service);
-  if (defaultService) {
-    service.title = defaultService.title;
-    service.price = defaultService.price;
-  }
-
   await service.save();
-  await syncProviderPreferredServices(req.user._id);
+  await ensureProviderServices(req.user._id);
+  const updatedService = await Service.findById(service._id);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Service updated successfully",
-    data: service,
+    data: updatedService,
   });
 });
 

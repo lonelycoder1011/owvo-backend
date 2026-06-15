@@ -40,8 +40,52 @@ const userSchema = new Schema(
 
     role: {
       type: String,
-      enum: ["user", "admin", "provider"],
+      enum: ["user", "admin", "provider", "staff"],
       default: "user",
+    },
+    staffPermissions: {
+      menus: {
+        type: [String],
+        default: ["bookings"],
+      },
+      actions: {
+        type: [String],
+        default: ["booking.status.update"],
+      },
+    },
+    accountStatus: {
+      type: String,
+      enum: ["active", "disabled"],
+      default: "active",
+    },
+    adminVerification: {
+      status: {
+        type: String,
+        enum: ["not_submitted", "pending", "approved", "rejected"],
+        default: "not_submitted",
+      },
+      reviewedBy: {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+        default: null,
+      },
+      reviewedAt: { type: Date },
+      rejectionReason: { type: String, trim: true, default: "" },
+      notes: { type: String, trim: true, default: "" },
+    },
+    enforcement: {
+      status: {
+        type: String,
+        enum: ["clear", "warned", "suspended", "banned"],
+        default: "clear",
+      },
+      reason: { type: String, trim: true, default: "" },
+      updatedBy: {
+        type: Schema.Types.ObjectId,
+        ref: "User",
+        default: null,
+      },
+      updatedAt: { type: Date },
     },
 
     isOnline: { type: Boolean, default: false },
@@ -170,6 +214,12 @@ const userSchema = new Schema(
       dateOfBirth: { type: Date },
       accountNumber: { type: String, trim: true, default: "" },
       sortCode: { type: String, trim: true, default: "" },
+    },
+
+    stripeConnect: {
+      accountId: { type: String, trim: true, default: "" },
+      payoutsEnabled: { type: Boolean, default: false },
+      onboardingComplete: { type: Boolean, default: false },
     },
 
     isBankCompleted: { type: Boolean, default: false },

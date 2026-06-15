@@ -6,7 +6,7 @@ import { Receipt } from "../model/receipt.model.js";
 import { Service } from "../model/service.model.js";
 import { User } from "../model/user.model.js";
 import { Vehicle } from "../model/vehicle.model.js";
-import { emitToUser } from "../socket/socket.js";
+import { broadcast, emitToUser } from "../socket/socket.js";
 import { isProviderAvailableNow } from "../utils/availability.util.js";
 import catchAsync from "../utils/catch.Async.js";
 import { getCurrentCatalogKeys } from "../utils/defaultServices.util.js";
@@ -29,6 +29,20 @@ const toCustomerSocketPayload = (customer) => {
     totalRatings: customer.customerRatingCount || 0,
   };
 };
+
+const toAdminBookingPayload = (booking, extras = {}) => ({
+  bookingId: booking._id?.toString(),
+  status: booking.status,
+  userId: booking.user?._id?.toString?.() || booking.user?.toString?.(),
+  providerId: booking.provider?._id?.toString?.() || booking.provider?.toString?.(),
+  serviceId: booking.service?._id?.toString?.() || booking.service?.toString?.(),
+  price: booking.finalPrice,
+  currency: booking.currency,
+  bookingDate: booking.bookingDate,
+  createdAt: booking.createdAt,
+  updatedAt: booking.updatedAt,
+  ...extras,
+});
 
 
 export const createBooking = catchAsync(async (req, res) => {
@@ -272,6 +286,12 @@ export const createBooking = catchAsync(async (req, res) => {
     payment: booking.payment,
     message: "You have a new booking request!",
   });
+
+  broadcast("admin_booking_created", toAdminBookingPayload(booking, {
+    customer: customerPayload,
+    service: servicePayload,
+    vehicle: vehiclePayload,
+  }));
 
   sendResponse(res, {
     statusCode: httpStatus.CREATED,
@@ -642,6 +662,14 @@ export const rebookBooking = catchAsync(async (req, res) => {
   if (washer.dailyWashLimit <= 0) {
     throw new AppError(httpStatus.BAD_REQUEST, "Washer daily limit completed");
   }
+
+  broadcast("admin_booking_status_updated", toAdminBookingPayload(booking, {
+    user: customerPayload,
+    service: servicePayload,
+    vehicle: vehiclePayload,
+    arrivedAt: booking.arrivedAt,
+    washEndsAt: booking.washEndsAt,
+  }));
 
   const currentService = await Service.findOne({
     _id: service,
