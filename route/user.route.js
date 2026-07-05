@@ -15,16 +15,23 @@ import { upload } from "../middleware/upload.middleware.js";
 
 const router = express.Router();
 
+const groupUploadedFilesByField = (req, res, next) => {
+  if (Array.isArray(req.files)) {
+    req.files = req.files.reduce((groupedFiles, file) => {
+      if (!groupedFiles[file.fieldname]) groupedFiles[file.fieldname] = [];
+      groupedFiles[file.fieldname].push(file);
+      return groupedFiles;
+    }, {});
+  }
+
+  next();
+};
 router.get("/profile", protect, getProfile);
 router.put(
   "/profile",
   protect,
-  upload.fields([
-    { name: "photo", maxCount: 1 },
-    { name: "idFile", maxCount: 1 },
-    { name: "passportOrDrivingLicenseFile", maxCount: 1 },
-    { name: "insurance", maxCount: 1 },
-  ]),
+  upload.any(),
+  groupUploadedFilesByField,
   updateProfile
 );
 router.put("/identity",protect,upload.array("idFiles", 5),updateIdentityInfo);
@@ -36,3 +43,6 @@ router.get("/activity", protect, getUserActivity);
 
 
 export default router;
+
+
+

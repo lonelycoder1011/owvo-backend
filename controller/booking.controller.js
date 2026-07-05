@@ -8,6 +8,7 @@ import { User } from "../model/user.model.js";
 import { Vehicle } from "../model/vehicle.model.js";
 import { broadcast, emitToUser } from "../socket/socket.js";
 import { isProviderAvailableNow } from "../utils/availability.util.js";
+import { syncProviderCompletedJobs } from "../utils/completedJobs.util.js";
 import catchAsync from "../utils/catch.Async.js";
 import { getCurrentCatalogKeys } from "../utils/defaultServices.util.js";
 import { refreshProviderBusyState } from "../utils/providerBusy.util.js";
@@ -444,6 +445,10 @@ export const updateBookingStatus = catchAsync(async (req, res) => {
     booking.user?._id?.toString?.() || booking.user?.toString();
   const bookingProviderId =
     booking.provider?._id?.toString?.() || booking.provider?.toString();
+  const providerCompletedJobs =
+    status === "completed"
+      ? await syncProviderCompletedJobs(bookingProviderId)
+      : null;
   const customerPayload = toCustomerSocketPayload(booking.user);
   const servicePayload = booking.service
     ? {
@@ -553,6 +558,14 @@ export const updateBookingStatus = catchAsync(async (req, res) => {
     });
   }
 
+  broadcast("admin_booking_status_updated", {
+    bookingId: booking._id.toString(),
+    status,
+    providerId: bookingProviderId,
+    userId: bookingUserId,
+    completedJobs: providerCompletedJobs,
+    updatedAt: booking.updatedAt,
+  });
   // ✅ Auto create / update receipt when completed
   if (status === "completed") {
     const subtotal = booking.price;                 // original price

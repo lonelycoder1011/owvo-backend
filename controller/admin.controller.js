@@ -20,6 +20,12 @@ import { Rating } from "../model/rating.model.js";
 import { UserRating } from "../model/userRating.model.js";
 import { emitToUser, broadcast } from "../socket/socket.js";
 import { refreshProviderBusyState } from "../utils/providerBusy.util.js";
+import {
+  emptyCompletedJobs,
+  getProviderCompletedJobCounts,
+  syncProviderCompletedJobs,
+  syncProvidersCompletedJobs,
+} from "../utils/completedJobs.util.js";
 import { recordActivity } from "../utils/activityLog.util.js";
 import {
   ensureDefaultServices,
@@ -225,6 +231,76 @@ const getPlatformSettingsDoc = async () =>
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 
+const parseDailyWashLimitMax = (value) => {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 50) {
+    throw new AppError(
+      httpStatus.BAD_REQUEST,
+      "Daily wash limit must be a whole number between 1 and 50"
+    );
+  }
+  return parsed;
+};
+
+const getPlatformDailyWashLimitMax = (settings) => {
+  const value = Number(settings?.dailyWashLimitMax);
+  return Number.isInteger(value) && value > 0 ? value : 7;
+};
+
+const getProviderDailyWashLimitMax = (provider, settings) => {
+  const providerMax = Number(provider?.dailyWashLimitMax);
+  if (Number.isInteger(providerMax) && providerMax > 0) return providerMax;
+  return getPlatformDailyWashLimitMax(settings);
+};
+
+const buildProviderDailyWashLimitPayload = (provider, settings, completedToday = null) => {
+  const providerMax = Number(provider?.dailyWashLimitMax);
+  const platformMax = getPlatformDailyWashLimitMax(settings);
+  const max = getProviderDailyWashLimitMax(provider, settings);
+
+  return {
+    remaining: Math.max(Number(provider?.dailyWashLimit) || 0, 0),
+    max,
+    customMax: Number.isInteger(providerMax) && providerMax > 0 ? providerMax : null,
+    platformMax,
+    completedToday,
+  };
+};
+
+const syncProvidersUsingPlatformDailyWashLimit = async (settings) => {
+  const platformMax = getPlatformDailyWashLimitMax(settings);
+  const providers = await User.find({
+    role: "provider",
+    $or: [{ dailyWashLimitMax: { $exists: false } }, { dailyWashLimitMax: null }],
+  });
+
+  if (!providers.length) return 0;
+
+  const counts = await getProviderCompletedJobCounts(providers.map((provider) => provider._id));
+
+  await Promise.all(
+    providers.map(async (provider) => {
+      const completedToday = counts.get(provider._id.toString())?.today || 0;
+      const remaining = Math.max(platformMax - completedToday, 0);
+      const providerUpdates = { dailyWashLimit: remaining };
+      if (remaining <= 0) {
+        providerUpdates.isOnline = false;
+        providerUpdates.isBusy = false;
+      }
+      Object.assign(provider, providerUpdates);
+
+      await User.updateOne({ _id: provider._id }, { $set: providerUpdates });
+
+      emitToUser(provider._id.toString(), "provider_daily_wash_limit_update", {
+        providerId: provider._id.toString(),
+        dailyWashLimit: buildProviderDailyWashLimitPayload(provider, settings, completedToday),
+        message: "Your platform daily wash limit has been updated.",
+      });
+    })
+  );
+
+  return providers.length;
+};
 const bookingPopulate = [
   {
     path: "user",
@@ -246,7 +322,7 @@ const bookingPopulate = [
   },
 ];
 
-const buildBookingSocketPayload = (booking) => {
+const buildBookingSocketPayload = (booking, extras = {}) => {
   const userId = booking.user?._id?.toString?.() || booking.user?.toString?.();
   const providerId =
     booking.provider?._id?.toString?.() || booking.provider?.toString?.();
@@ -262,6 +338,7 @@ const buildBookingSocketPayload = (booking) => {
     arrivedAt: booking.arrivedAt,
     washEndsAt: booking.washEndsAt,
     updatedAt: booking.updatedAt,
+    ...extras,
   };
 };
 
@@ -292,8 +369,8 @@ const createReceiptForCompletedBooking = async (booking) => {
   );
 };
 
-const emitDashboardBookingStatus = (booking, status) => {
-  const payload = buildBookingSocketPayload(booking);
+const emitDashboardBookingStatus = (booking, status, extras = {}) => {
+  const payload = buildBookingSocketPayload(booking, extras);
   const userId = payload.userId;
   const providerId = payload.providerId;
   const statusMessages = {
@@ -563,15 +640,18 @@ export const getAllProviders = catchAsync(async (req, res) => {
     .sort({ createdAt: -1 })
     .lean();
   const providerIds = providers.map((provider) => provider._id).filter(Boolean);
-  const ratingStats = await Rating.aggregate([
-    { $match: { provider: { $in: providerIds } } },
-    {
-      $group: {
-        _id: "$provider",
-        averageRating: { $avg: "$rating" },
-        totalRatings: { $sum: 1 },
+  const [ratingStats, completedJobsByProviderId] = await Promise.all([
+    Rating.aggregate([
+      { $match: { provider: { $in: providerIds } } },
+      {
+        $group: {
+          _id: "$provider",
+          averageRating: { $avg: "$rating" },
+          totalRatings: { $sum: 1 },
+        },
       },
-    },
+    ]),
+    syncProvidersCompletedJobs(providerIds),
   ]);
   const ratingsByProviderId = new Map(
     ratingStats.map((stat) => [
@@ -585,6 +665,8 @@ export const getAllProviders = catchAsync(async (req, res) => {
   const data = providers.map((provider) => ({
     ...provider,
     ...ratingsByProviderId.get(provider._id.toString()),
+    completedJobs:
+      completedJobsByProviderId.get(provider._id.toString()) || emptyCompletedJobs(),
   }));
 
   sendResponse(res, {
@@ -813,9 +895,13 @@ export const updateAdminBookingStatus = catchAsync(async (req, res) => {
   await booking.save();
   await refreshProviderBusyState(booking.provider);
   await createReceiptForCompletedBooking(booking);
+  const completedJobs =
+    status === "completed"
+      ? await syncProviderCompletedJobs(booking.provider)
+      : null;
   await booking.populate(bookingPopulate);
 
-  emitDashboardBookingStatus(booking, status);
+  emitDashboardBookingStatus(booking, status, { completedJobs });
   await recordActivity({
     req,
     action: "booking.status_updated",
@@ -888,6 +974,24 @@ export const updateProviderVerification = catchAsync(async (req, res) => {
   }
 
   await provider.save();
+
+  const verificationMessage =
+    status === "approved"
+      ? "Your OWVO provider verification has been approved. You can now go online."
+      : status === "rejected"
+        ? provider.adminVerification.rejectionReason ||
+          "Your OWVO provider verification was rejected. Please update your documents or contact support."
+        : "Your OWVO provider verification is under review.";
+
+  emitToUser(provider._id.toString(), "provider_verification_update", {
+    providerId: provider._id.toString(),
+    status,
+    message: verificationMessage,
+    rejectionReason: provider.adminVerification.rejectionReason,
+    notes: provider.adminVerification.notes,
+    reviewedAt: provider.adminVerification.reviewedAt,
+  });
+
   await recordActivity({
     req,
     action: "provider.verification_updated",
@@ -960,6 +1064,7 @@ export const updateProviderEnforcement = catchAsync(async (req, res) => {
   }
 
   await provider.save();
+
   await recordActivity({
     req,
     action: "provider.enforcement_updated",
@@ -977,9 +1082,12 @@ export const updateProviderEnforcement = catchAsync(async (req, res) => {
 });
 
 export const getAdminServicesPricing = catchAsync(async (req, res) => {
-  const catalogServices = await ensureDefaultServices();
+  const [catalogServices, settings] = await Promise.all([
+    ensureDefaultServices(),
+    getPlatformSettingsDoc(),
+  ]);
   const providers = await User.find({ role: "provider" })
-    .select("_id name email serviceArea accountStatus adminVerification")
+    .select("_id name email serviceArea accountStatus adminVerification dailyWashLimit dailyWashLimitMax isOnline")
     .sort({ createdAt: -1 })
     .lean();
 
@@ -1012,6 +1120,7 @@ export const getAdminServicesPricing = catchAsync(async (req, res) => {
       active: 0,
       inactive: 0,
     },
+    dailyWashLimit: buildProviderDailyWashLimitPayload(provider, settings),
   }));
 
   sendResponse(res, {
@@ -1020,6 +1129,9 @@ export const getAdminServicesPricing = catchAsync(async (req, res) => {
     message: "Services and pricing fetched successfully",
     data: {
       catalogServices,
+      platformSettings: {
+        dailyWashLimitMax: getPlatformDailyWashLimitMax(settings),
+      },
       providerSummaries,
       providerServices,
     },
@@ -1139,6 +1251,73 @@ export const updateAdminProviderService = catchAsync(async (req, res) => {
   });
 });
 
+export const updateProviderDailyWashLimit = catchAsync(async (req, res) => {
+  const { providerId } = req.params;
+  const dailyWashLimitMax = parseDailyWashLimitMax(req.body?.dailyWashLimitMax);
+
+  const provider = await User.findOne({ _id: providerId, role: "provider" });
+  if (!provider) {
+    throw new AppError(httpStatus.NOT_FOUND, "Provider not found");
+  }
+
+  const counts = await getProviderCompletedJobCounts([provider._id]);
+  const completedToday = counts.get(provider._id.toString())?.today || 0;
+  const remaining = Math.max(dailyWashLimitMax - completedToday, 0);
+
+  provider.dailyWashLimitMax = dailyWashLimitMax;
+  provider.dailyWashLimit = remaining;
+  if (remaining <= 0) {
+    provider.isOnline = false;
+    provider.isBusy = false;
+  }
+
+  await User.updateOne(
+    { _id: provider._id },
+    {
+      $set: {
+        dailyWashLimitMax,
+        dailyWashLimit: remaining,
+        isOnline: provider.isOnline,
+        isBusy: provider.isBusy,
+      },
+    }
+  );
+  const settings = await getPlatformSettingsDoc();
+  const dailyWashLimit = buildProviderDailyWashLimitPayload(provider, settings, completedToday);
+
+  await recordActivity({
+    req,
+    action: "provider.daily_wash_limit_updated",
+    entityType: "user",
+    entityId: provider._id,
+    metadata: {
+      providerId: provider._id.toString(),
+      dailyWashLimitMax,
+      completedToday,
+      remaining,
+    },
+  });
+
+  broadcast("admin_services_pricing_updated", {
+    providerId: provider._id.toString(),
+    dailyWashLimit,
+  });
+  emitToUser(provider._id.toString(), "provider_daily_wash_limit_update", {
+    providerId: provider._id.toString(),
+    dailyWashLimit,
+    message: "Your daily wash limit has been updated.",
+  });
+
+  sendResponse(res, {
+    statusCode: httpStatus.OK,
+    success: true,
+    message: "Provider daily wash limit updated successfully",
+    data: {
+      provider: provider.toObject(),
+      dailyWashLimit,
+    },
+  });
+});
 export const getAdminReports = catchAsync(async (req, res) => {
   const { status, type, limit = 50, page = 1 } = req.query;
   const filter = dateFilter("createdAt", req.query);
@@ -2071,6 +2250,7 @@ export const updateDashboardSettings = catchAsync(async (req, res) => {
   const {
     commissionRate,
     providerVerificationRequired,
+    dailyWashLimitMax,
     autoPayoutEnabled,
     nextPayoutDay,
     supportEmail,
@@ -2078,6 +2258,8 @@ export const updateDashboardSettings = catchAsync(async (req, res) => {
     stripeAccountId,
     stripePayoutsEnabled,
   } = req.body || {};
+  let shouldSyncDailyWashLimit = false;
+  let syncedDailyLimitProviders = 0;
 
   if (commissionRate !== undefined) {
     const parsedRate = Number(commissionRate);
@@ -2088,6 +2270,19 @@ export const updateDashboardSettings = catchAsync(async (req, res) => {
   }
   if (providerVerificationRequired !== undefined) {
     settings.providerVerificationRequired = Boolean(providerVerificationRequired);
+  }
+  if (dailyWashLimitMax !== undefined) {
+    const currentDailyWashLimitMax = getPlatformDailyWashLimitMax(settings);
+    const parsedDailyWashLimitMax = Number(dailyWashLimitMax);
+    if (
+      !Number.isInteger(parsedDailyWashLimitMax) ||
+      parsedDailyWashLimitMax < 1 ||
+      parsedDailyWashLimitMax > 50
+    ) {
+      throw new AppError(httpStatus.BAD_REQUEST, "Daily wash limit must be a whole number between 1 and 50");
+    }
+    settings.dailyWashLimitMax = parsedDailyWashLimitMax;
+    shouldSyncDailyWashLimit = parsedDailyWashLimitMax !== currentDailyWashLimitMax;
   }
   if (autoPayoutEnabled !== undefined) {
     settings.autoPayoutEnabled = Boolean(autoPayoutEnabled);
@@ -2106,6 +2301,14 @@ export const updateDashboardSettings = catchAsync(async (req, res) => {
   settings.updatedBy = req.user._id;
   await settings.save();
 
+  if (shouldSyncDailyWashLimit) {
+    syncedDailyLimitProviders = await syncProvidersUsingPlatformDailyWashLimit(settings);
+    broadcast("admin_services_pricing_updated", {
+      platformSettings: { dailyWashLimitMax: settings.dailyWashLimitMax },
+      syncedDailyLimitProviders,
+    });
+  }
+
   await recordActivity({
     req,
     action: "settings.updated",
@@ -2114,6 +2317,8 @@ export const updateDashboardSettings = catchAsync(async (req, res) => {
     metadata: {
       commissionRate: settings.commissionRate,
       providerVerificationRequired: settings.providerVerificationRequired,
+      dailyWashLimitMax: settings.dailyWashLimitMax,
+      syncedDailyLimitProviders,
       autoPayoutEnabled: settings.autoPayoutEnabled,
       stripePayoutsEnabled: settings.stripePayoutsEnabled,
     },

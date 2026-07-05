@@ -38,6 +38,24 @@ const globalErrorHandler = (err, req, res, next) => {
         message: err?.message,
       },
     ];
+  } else if (err?.name === "MulterError") {
+    statusCode = 400;
+    message = err.code === "LIMIT_FILE_SIZE" ? "Uploaded file is too large" : err.message;
+    errorSources = [
+      {
+        path: err.field || "file",
+        message,
+      },
+    ];
+  } else if (err?.statusCode) {
+    statusCode = err.statusCode;
+    message = err.message;
+    errorSources = [
+      {
+        path: "",
+        message,
+      },
+    ];
   }
 
   return res.status(statusCode).json({
@@ -45,7 +63,7 @@ const globalErrorHandler = (err, req, res, next) => {
     message,
     errorSources,
     err,
-    stack: err?.stack | null,
+    stack: err?.stack || null,
   });
 };
 

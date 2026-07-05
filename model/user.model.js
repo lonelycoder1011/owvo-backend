@@ -91,6 +91,7 @@ const userSchema = new Schema(
     isOnline: { type: Boolean, default: false },
     isBusy: { type: Boolean, default: false },
     dailyWashLimit: { type: Number, default: 7 },
+    dailyWashLimitMax: { type: Number, min: 1, max: 50 },
     policyAcceptance: {
       safetyGuidelinesAccepted: { type: Boolean, default: false },
       safetyGuidelinesAcceptedAt: { type: Date },
@@ -229,7 +230,24 @@ const userSchema = new Schema(
            public_id: { type: String, default: "" },
           url: { type: String, default: "" },
     },
+      uploadedAt: { type: Date },
 },
+
+    publicLiabilityInsurance: {
+      document: {
+        public_id: { type: String, default: "" },
+        url: { type: String, default: "" },
+      },
+      uploadedAt: { type: Date },
+    },
+
+    drivewayPhoto: {
+      document: {
+        public_id: { type: String, default: "" },
+        url: { type: String, default: "" },
+      },
+      uploadedAt: { type: Date },
+    },
 
     location: {
       type: {
@@ -265,10 +283,16 @@ const userSchema = new Schema(
       type: Number,
       default: 0,
     },
+    completedJobs: {
+      today: { type: Number, default: 0 },
+      week: { type: Number, default: 0 },
+      yearly: { type: Number, default: 0 },
+      allTime: { type: Number, default: 0 },
+      syncedAt: { type: Date },
+    },
   },
   { timestamps: true }
 );
-
 userSchema.index({ location: "2dsphere" }, { sparse: true });
 userSchema.index(
   { phoneNumber: 1 },

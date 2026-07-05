@@ -18,6 +18,12 @@ const platformSettingSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    dailyWashLimitMax: {
+      type: Number,
+      default: 7,
+      min: 1,
+      max: 50,
+    },
     autoPayoutEnabled: {
       type: Boolean,
       default: false,

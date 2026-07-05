@@ -36,6 +36,7 @@ import {
   updateAdminProviderService,
   updateAdminMe,
   updateDashboardSettings,
+  updateProviderDailyWashLimit,
   updateProviderEnforcement,
   updateProviderVerification,
   updateStaffAccount,
@@ -63,6 +64,7 @@ router.patch("/reports/:reportId/status", protect, isAdmin, updateAdminReportSta
 router.get("/services-pricing", protect, hasDashboardMenu("reports"), getAdminServicesPricing);
 router.patch("/services-pricing/catalog/:serviceId", protect, isAdmin, updateAdminCatalogService);
 router.patch("/services-pricing/providers/:providerId/services/:serviceId", protect, isAdmin, updateAdminProviderService);
+router.patch("/services-pricing/providers/:providerId/daily-wash-limit", protect, isAdmin, updateProviderDailyWashLimit);
 
 router.get("/payments", protect, hasDashboardMenu("payouts-payments"), getAdminPayments);
 router.get("/earnings", protect, hasDashboardMenu("earnings"), getAdminEarnings);

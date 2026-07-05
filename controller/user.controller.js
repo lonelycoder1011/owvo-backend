@@ -5,9 +5,41 @@ import AppError from "../errors/AppError.js";
 import { Booking } from "../model/booking.model.js";
 import { Rating } from "../model/rating.model.js";
 import { User } from "../model/user.model.js";
+import { PlatformSetting } from "../model/platformSetting.model.js";
+import { syncProviderCompletedJobs } from "../utils/completedJobs.util.js";
 import { uploadOnCloudinary } from "../utils/common.Method.js";
 import catchAsync from "../utils/catch.Async.js";
 import sendResponse from "../utils/sendResponse.js";
+
+const getPlatformSettingsDoc = async () =>
+  PlatformSetting.findOneAndUpdate(
+    { key: "global" },
+    { $setOnInsert: { key: "global" } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+const resolveProviderDailyWashLimitMax = (user, settings) => {
+  const providerMax = Number(user?.dailyWashLimitMax);
+  if (Number.isInteger(providerMax) && providerMax > 0) return providerMax;
+
+  const platformMax = Number(settings?.dailyWashLimitMax);
+  return Number.isInteger(platformMax) && platformMax > 0 ? platformMax : 7;
+};
+
+const buildProfilePayload = async (user) => {
+  if (user.role !== "provider") return user;
+
+  const [settings, completedJobs] = await Promise.all([
+    getPlatformSettingsDoc(),
+    syncProviderCompletedJobs(user._id),
+  ]);
+
+  return {
+    ...user.toObject(),
+    dailyWashLimitMax: resolveProviderDailyWashLimitMax(user, settings),
+    completedJobs,
+  };
+};
 
 
 export const getProfile = catchAsync(async (req, res) => {
@@ -30,11 +62,13 @@ export const getProfile = catchAsync(async (req, res) => {
     await user.save();
   }
 
+  const data = await buildProfilePayload(user);
+
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Profile fetched successfully",
-    data: user,
+    data,
   });
 });
 
@@ -70,6 +104,120 @@ const normalizeOptionalString = (value) => {
   const normalized = value.toString().trim();
   return normalized ? normalized : undefined;
 };
+
+const isCloudinaryConfigured = () =>
+  Boolean(
+    process.env.CLOUDINARY_CLOUD_NAME &&
+      process.env.CLOUDINARY_API_KEY &&
+      process.env.CLOUDINARY_API_SECRET
+  );
+
+const localUploadReference = (file) => ({
+  public_id: file.filename || "",
+  url: file.path ? `/${file.path.replace(/\\/g, "/")}` : "",
+});
+
+const uploadUserFile = async (file, folder) => {
+  if (!file?.path) {
+    throw new AppError(httpStatus.BAD_REQUEST, "No file uploaded");
+  }
+
+  if (!isCloudinaryConfigured()) {
+    return localUploadReference(file);
+  }
+
+  let uploadResult;
+  try {
+    uploadResult = await uploadOnCloudinary(file.path, folder, {
+      deleteOnError: false,
+    });
+  } catch (error) {
+    console.error(
+      `Cloudinary upload failed for ${file.fieldname || "file"}; using local upload reference.`,
+      error?.message || error
+    );
+    return localUploadReference(file);
+  }
+
+  const url = uploadResult?.secure_url || uploadResult?.url;
+  if (!url) {
+    throw new AppError(
+      httpStatus.INTERNAL_SERVER_ERROR,
+      "Uploaded file did not return a usable URL"
+    );
+  }
+
+  return {
+    public_id: uploadResult.public_id || uploadResult.asset_id || file.filename || "",
+    url,
+  };
+};
+
+const uploadProviderDocumentFile = async (file, folder) => ({
+  document: await uploadUserFile(file, folder),
+  uploadedAt: new Date(),
+});
+
+const ensureProfileSubdocuments = (user) => {
+  if (!user.identityVerification) user.identityVerification = {};
+  if (!user.drivewayEligibility) user.drivewayEligibility = {};
+  if (!user.bankDetails) user.bankDetails = {};
+  if (!user.providerAddress) user.providerAddress = {};
+};
+
+const normalizeUploadFieldName = (fieldName = "") =>
+  fieldName.toString().toLowerCase().replace(/[^a-z0-9]/g, "");
+
+const fileGroupsFromUpload = (files) => {
+  if (!files) return {};
+  if (!Array.isArray(files)) return files;
+
+  return files.reduce((groupedFiles, file) => {
+    if (!groupedFiles[file.fieldname]) groupedFiles[file.fieldname] = [];
+    groupedFiles[file.fieldname].push(file);
+    return groupedFiles;
+  }, {});
+};
+
+const firstUploadedFile = (files, fieldNames, fieldMatcher) => {
+  const groupedFiles = fileGroupsFromUpload(files);
+  for (const fieldName of fieldNames) {
+    const file = groupedFiles?.[fieldName]?.[0];
+    if (file) return file;
+  }
+
+  for (const [fieldName, fileList] of Object.entries(groupedFiles)) {
+    if (fieldMatcher?.(normalizeUploadFieldName(fieldName))) {
+      return fileList?.[0] || null;
+    }
+  }
+
+  return null;
+};
+
+const providerInsuranceUploadFields = [
+  "publicLiabilityInsurance",
+  "publicLiabilityInsuranceFile",
+  "publicLiabilityInsuranceDocument",
+  "liabilityInsurance",
+  "insuranceDocument",
+  "insurance",
+];
+
+const drivewayPhotoUploadFields = [
+  "drivewayPhoto",
+  "drivewayPhotoFile",
+  "drivewayPicture",
+  "drivewayImage",
+];
+
+const isProviderInsuranceUploadField = (fieldName) =>
+  fieldName.includes("insurance") || fieldName.includes("liability");
+
+const isDrivewayPhotoUploadField = (fieldName) =>
+  fieldName.includes("driveway") ||
+  fieldName.includes("parkingphoto") ||
+  fieldName.includes("parkingimage");
 
 export const updateProfile = catchAsync(async (req, res) => {
   const {
@@ -109,6 +257,7 @@ export const updateProfile = catchAsync(async (req, res) => {
   if (!user) {
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
+  ensureProfileSubdocuments(user);
 
   // ---------------------------
   // Unique checks
@@ -180,7 +329,12 @@ export const updateProfile = catchAsync(async (req, res) => {
   // Identity verification
   // ---------------------------
   if (documentType !== undefined) user.identityVerification.documentType = documentType;
-  if (documentNumber !== undefined) user.identityVerification.documentNumber = documentNumber;
+  if (documentNumber !== undefined) {
+    user.identityVerification.documentNumber = documentNumber;
+    if (!user.identityVerification.documentType) {
+      user.identityVerification.documentType = "driving_license";
+    }
+  }
 
   // ---------------------------
   // Driveway eligibility
@@ -207,58 +361,51 @@ export const updateProfile = catchAsync(async (req, res) => {
   if (sortCode !== undefined) user.bankDetails.sortCode = sortCode;
 
   // ---------------------------
-  // File uploads to Cloudinary
+  // File uploads
   // ---------------------------
   if (req.files?.photo?.[0]) {
-  const uploadResult = await uploadOnCloudinary(
-    req.files.photo[0].path,
-    "users"
+    user.photo = await uploadUserFile(req.files.photo[0], "users");
+  }
+
+  if (req.files?.idFile?.[0]) {
+    user.identityVerification.idFile = await uploadUserFile(
+      req.files.idFile[0],
+      "users/identity"
+    );
+  }
+
+  if (req.files?.passportOrDrivingLicenseFile?.[0]) {
+    user.identityVerification.passportOrDrivingLicenseFile = await uploadUserFile(
+      req.files.passportOrDrivingLicenseFile[0],
+      "users/identity"
+    );
+  }
+
+  const publicLiabilityInsuranceFile = firstUploadedFile(
+    req.files,
+    providerInsuranceUploadFields,
+    isProviderInsuranceUploadField
   );
+  if (publicLiabilityInsuranceFile) {
+    const uploadedPublicLiabilityInsurance = await uploadProviderDocumentFile(
+      publicLiabilityInsuranceFile,
+      "users/insurance"
+    );
+    user.publicLiabilityInsurance = uploadedPublicLiabilityInsurance;
+    user.insurance = uploadedPublicLiabilityInsurance;
+  }
 
-  user.photo = {
-    public_id: uploadResult.public_id,
-    url: uploadResult.secure_url,
-  };
-}
-
-if (req.files?.idFile?.[0]) {
-  const uploadResult = await uploadOnCloudinary(
-    req.files.idFile[0].path,
-    "users/identity"
+  const drivewayPhotoFile = firstUploadedFile(
+    req.files,
+    drivewayPhotoUploadFields,
+    isDrivewayPhotoUploadField
   );
-
-  user.identityVerification.idFile = {
-    public_id: uploadResult.public_id,
-    url: uploadResult.secure_url,
-  };
-}
-
-if (req.files?.passportOrDrivingLicenseFile?.[0]) {
-  const uploadResult = await uploadOnCloudinary(
-    req.files.passportOrDrivingLicenseFile[0].path,
-    "users/identity"
-  );
-
-  user.identityVerification.passportOrDrivingLicenseFile = {
-    public_id: uploadResult.public_id,
-    url: uploadResult.secure_url,
-  };
-}
-
-if (req.files?.insurance?.[0]) {
-  const uploadResult = await uploadOnCloudinary(
-    req.files.insurance[0].path,
-    "users/insurance"
-  );
-
-  user.insurance = {
-    document: {
-      public_id: uploadResult.public_id,
-      url: uploadResult.secure_url,
-    },
-    uploadedAt: new Date(),
-  };
-}
+  if (drivewayPhotoFile) {
+    user.drivewayPhoto = await uploadProviderDocumentFile(
+      drivewayPhotoFile,
+      "users/driveway"
+    );
+  }
   // ---------------------------
   // Completion checks
   // ---------------------------
@@ -280,10 +427,16 @@ if (req.files?.insurance?.[0]) {
   user.isProfileCompleted = isPersonalCompleted;
 
   const d = user.drivewayEligibility;
+  const hasPublicLiabilityInsurance = Boolean(
+    user.publicLiabilityInsurance?.document?.url || user.insurance?.document?.url
+  );
+  const hasDrivewayPhoto = Boolean(user.drivewayPhoto?.document?.url);
   const isIdentityCompleted = Boolean(
     user.identityVerification.documentType &&
     user.identityVerification.documentNumber &&
-    user.identityVerification.passportOrDrivingLicenseFile &&
+    user.identityVerification.passportOrDrivingLicenseFile?.url &&
+    hasPublicLiabilityInsurance &&
+    hasDrivewayPhoto &&
     d.isPrivateProperty &&
     d.hasPermission &&
     d.noRoadPayment &&
@@ -313,7 +466,9 @@ if (req.files?.insurance?.[0]) {
       user.photo?.url &&
       user.identityVerification?.documentType &&
       user.identityVerification?.documentNumber &&
-      user.identityVerification?.passportOrDrivingLicenseFile?.url
+      user.identityVerification?.passportOrDrivingLicenseFile?.url &&
+      hasPublicLiabilityInsurance &&
+      hasDrivewayPhoto
   );
 
   if (
@@ -338,12 +493,13 @@ if (req.files?.insurance?.[0]) {
   // Save user and respond
   // ---------------------------
   await user.save();
+  const data = await buildProfilePayload(user);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Profile updated successfully",
-    data: user,
+    data,
   });
 });
 
@@ -585,6 +741,11 @@ export const updateBankDetails = catchAsync(async (req, res) => {
 
   user.isBankCompleted = Boolean(completed);
 
+  const hasPublicLiabilityInsurance = Boolean(
+    user.publicLiabilityInsurance?.document?.url || user.insurance?.document?.url
+  );
+  const hasDrivewayPhoto = Boolean(user.drivewayPhoto?.document?.url);
+
   const hasProviderVerificationDocuments = Boolean(
     user.role === "provider" &&
       user.isProfileCompleted &&
@@ -592,7 +753,9 @@ export const updateBankDetails = catchAsync(async (req, res) => {
       user.photo?.url &&
       user.identityVerification?.documentType &&
       user.identityVerification?.documentNumber &&
-      user.identityVerification?.passportOrDrivingLicenseFile?.url
+      user.identityVerification?.passportOrDrivingLicenseFile?.url &&
+      hasPublicLiabilityInsurance &&
+      hasDrivewayPhoto
   );
 
   if (
@@ -772,3 +935,12 @@ export const getUserActivity = catchAsync(async (req, res) => {
     },
   });
 });
+
+
+
+
+
+
+
+
+

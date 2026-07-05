@@ -7,11 +7,12 @@ import { Rating } from "../model/rating.model.js";
 import { Service } from "../model/service.model.js";
 import { User } from "../model/user.model.js";
 import { WashHistory } from "../model/WashHistory.model.js";
-import { emitToUser } from "../socket/socket.js";
+import { broadcast, emitToUser } from "../socket/socket.js";
 import {
   isProviderAvailableNow,
   normalizeAvailability,
 } from "../utils/availability.util.js";
+import { syncProviderCompletedJobs } from "../utils/completedJobs.util.js";
 import catchAsync from "../utils/catch.Async.js";
 import {
   ensureProviderServices,
@@ -455,7 +456,19 @@ export const acceptBooking = catchAsync(async (req, res) => {
   if (washer.isModified()) {
     await washer.save();
   }
+  const providerCompletedJobs =
+    status === "completed"
+      ? await syncProviderCompletedJobs(bookingProviderId)
+      : null;
 
+  broadcast("admin_booking_status_updated", {
+    bookingId: booking._id.toString(),
+    status,
+    providerId: bookingProviderId,
+    userId: bookingUserId,
+    completedJobs: providerCompletedJobs,
+    updatedAt: booking.updatedAt,
+  });
   // ✅ Notify user their booking was accepted and wash has started
   if (status === "accepted" || status === "ongoing") {
     emitToUser(bookingUserId, "booking_accepted", {
@@ -504,6 +517,16 @@ export const completeWash = catchAsync(async (req, res) => {
   }
 
   await washer.save();
+  const providerCompletedJobs = await syncProviderCompletedJobs(booking.provider);
+
+  broadcast("admin_booking_status_updated", {
+    bookingId: booking._id.toString(),
+    status: "completed",
+    providerId: booking.provider.toString(),
+    userId: booking.user.toString(),
+    completedJobs: providerCompletedJobs,
+    updatedAt: booking.updatedAt,
+  });
 
   await WashHistory.create({
     washer: washer._id,
