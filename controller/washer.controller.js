@@ -311,7 +311,14 @@ export const goOffline = catchAsync(async (req, res) => {
 
 export const acceptBooking = catchAsync(async (req, res) => {
   const washer = await User.findById(req.user._id);
-  const { status } = req.body;
+  const { status, cancellationReason } = req.body || {};
+  const normalizedCancellationReason =
+    typeof cancellationReason === "string"
+      ? cancellationReason.trim().slice(0, 280)
+      : "";
+  const providerCancellationMessage = normalizedCancellationReason
+    ? `Your booking has been cancelled by the provider. Reason: ${normalizedCancellationReason}`
+    : "Your booking has been cancelled by the provider.";
 
   if (!washer || washer.role !== "provider") {
     throw new AppError(httpStatus.NOT_FOUND, "Washer not found");
@@ -324,7 +331,7 @@ export const acceptBooking = catchAsync(async (req, res) => {
     accepted: "Your booking has been accepted!",
     ongoing: "Your car wash has started!",
     completed: "Your car wash is complete! Please rate your experience.",
-    cancelled: "Your booking has been cancelled.",
+    cancelled: providerCancellationMessage,
     arrived: "The User has arrived at your location.",
   };
 
@@ -332,7 +339,7 @@ export const acceptBooking = catchAsync(async (req, res) => {
     throw new AppError(httpStatus.BAD_REQUEST, "Invalid booking status");
   }
 
-  if (washer.dailyWashLimit <= 0) {
+  if (status !== "cancelled" && washer.dailyWashLimit <= 0) {
     washer.isOnline = false;
     await washer.save();
     throw new AppError(httpStatus.BAD_REQUEST, "Wash limit completed");
@@ -443,10 +450,18 @@ export const acceptBooking = catchAsync(async (req, res) => {
       arrivedAt: booking.arrivedAt,
       washEndsAt: booking.washEndsAt,
       message: statusMessages[status],
+      cancellationReason:
+        status === "cancelled" ? normalizedCancellationReason : undefined,
+      cancelledBy: status === "cancelled" ? "provider" : undefined,
     });
   }
 
   booking.status = status;
+  if (status === "cancelled") {
+    booking.cancellationReason = normalizedCancellationReason;
+    booking.cancelledBy = "provider";
+    booking.cancelledAt = new Date();
+  }
   if (status === "arrived" && !booking.arrivedAt) {
     booking.arrivedAt = new Date();
     booking.washEndsAt = new Date(booking.arrivedAt.getTime() + 30 * 60 * 1000);
@@ -467,6 +482,9 @@ export const acceptBooking = catchAsync(async (req, res) => {
     providerId: bookingProviderId,
     userId: bookingUserId,
     completedJobs: providerCompletedJobs,
+    cancellationReason: booking.cancellationReason,
+    cancelledBy: booking.cancelledBy,
+    cancelledAt: booking.cancelledAt,
     updatedAt: booking.updatedAt,
   });
   // ✅ Notify user their booking was accepted and wash has started
