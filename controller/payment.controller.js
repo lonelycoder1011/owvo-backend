@@ -268,7 +268,7 @@ export const createPayment = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Create payment error:", error);
+    console.error("Create payment error:", error?.message || error);
     return sendFailure(
       res,
       error?.statusCode || 500,
@@ -318,7 +318,7 @@ export const confirmPayment = async (req, res) => {
       stripeStatus: paymentIntent.status,
     });
   } catch (error) {
-    console.error("Confirm payment error:", error);
+    console.error("Confirm payment error:", error?.message || error);
     return sendFailure(
       res,
       error?.statusCode || 500,
@@ -343,7 +343,7 @@ export const stripeWebhook = async (req, res) => {
       webhookSecret
     );
   } catch (error) {
-    console.error("Stripe webhook signature verification failed:", error);
+    console.error("Stripe webhook signature verification failed:", error?.message || error);
     return sendFailure(res, 400, `Webhook Error: ${error.message}`);
   }
 
@@ -367,7 +367,8 @@ export const stripeWebhook = async (req, res) => {
 
     return res.status(200).json({ received: true });
   } catch (error) {
-    console.error("Stripe webhook handling error:", error);
+    console.error("Stripe webhook handling error:", error?.message || error);
     return sendFailure(res, 500, "Stripe webhook handling failed.");
   }
 };
+

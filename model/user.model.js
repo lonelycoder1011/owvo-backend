@@ -128,6 +128,7 @@ const userSchema = new Schema(
     resetPasswordOTP: { type: String },
     resetPasswordOTPExpiry: { type: Date },
     deleteReason: { type: String },
+    deletedAt: { type: Date },
 
     phoneNumber: {
       type: String,

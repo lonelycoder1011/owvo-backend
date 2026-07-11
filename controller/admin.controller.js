@@ -192,6 +192,43 @@ const dashboardUserSelect =
   "-password -refreshToken -verificationInfo.token -bankDetails.accountNumber -bankDetails.sortCode";
 const providerVerificationSelect =
   "-password -refreshToken -verificationInfo.token";
+const maskSensitiveValue = (value, visible = 4) => {
+  const raw = value?.toString?.().replace(/\s+/g, "") || "";
+  if (!raw) return "";
+  return `**** ${raw.slice(-visible)}`;
+};
+
+const maskProviderVerificationPayload = (provider) => {
+  const data = provider?.toObject ? provider.toObject() : { ...(provider || {}) };
+
+  if (data.bankDetails) {
+    data.bankDetails = {
+      ...data.bankDetails,
+      accountNumber: maskSensitiveValue(data.bankDetails.accountNumber),
+      sortCode: maskSensitiveValue(data.bankDetails.sortCode, 2),
+    };
+  }
+
+  if (data.nationalInsuranceNumber) {
+    data.nationalInsuranceNumber = maskSensitiveValue(data.nationalInsuranceNumber);
+  }
+
+  if (data.identityVerification?.documentNumber) {
+    data.identityVerification = {
+      ...data.identityVerification,
+      documentNumber: maskSensitiveValue(data.identityVerification.documentNumber),
+    };
+  }
+
+  if (data.stripeConnect?.accountId) {
+    data.stripeConnect = {
+      ...data.stripeConnect,
+      accountId: maskSensitiveValue(data.stripeConnect.accountId),
+    };
+  }
+
+  return data;
+};
 
 const REPORT_TYPES = ["general", "payment", "service_quality", "safety", "provider_conduct"];
 const STAFF_MENUS = [
@@ -203,6 +240,7 @@ const STAFF_MENUS = [
   "payouts-payments",
   "earnings",
   "reports",
+  "data-requests",
   "staff-management",
   "notifications",
   "settings",
@@ -932,13 +970,15 @@ export const getProviderVerificationQueue = catchAsync(async (req, res) => {
 
   const providers = await User.find(filter)
     .select(providerVerificationSelect)
-    .sort({ updatedAt: -1 });
+    .sort({ updatedAt: -1 })
+    .lean();
+  const data = providers.map(maskProviderVerificationPayload);
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Provider verification queue fetched successfully",
-    data: providers,
+    data,
   });
 });
 
@@ -1004,7 +1044,7 @@ export const updateProviderVerification = catchAsync(async (req, res) => {
     statusCode: httpStatus.OK,
     success: true,
     message: "Provider verification updated successfully",
-    data: provider,
+    data: maskProviderVerificationPayload(provider),
   });
 });
 
@@ -1077,7 +1117,7 @@ export const updateProviderEnforcement = catchAsync(async (req, res) => {
     statusCode: httpStatus.OK,
     success: true,
     message: "Provider enforcement updated successfully",
-    data: provider,
+    data: maskProviderVerificationPayload(provider),
   });
 });
 
@@ -2332,3 +2372,5 @@ export const updateDashboardSettings = catchAsync(async (req, res) => {
     data: settings,
   });
 });
+
+

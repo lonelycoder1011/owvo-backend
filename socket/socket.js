@@ -1,12 +1,28 @@
 import { Server } from "socket.io";
+import jwt from "jsonwebtoken";
 import mongoose from "mongoose";
 import { Booking } from "../model/booking.model.js";
 import { ChatMessage } from "../model/chatMessage.model.js";
+import { corsOriginDelegate } from "../utils/allowedOrigins.util.js";
 
 let io;
 
 // userId -> Set<socketId>. Multiple live sockets can exist during reconnects.
 const connectedUsers = new Map();
+const isProductionRuntime = () =>
+  process.env.NODE_ENV === "production" || Boolean(process.env.RENDER);
+
+const socketDebugLog = (...args) => {
+  if (!isProductionRuntime()) {
+    console.log(...args);
+  }
+};
+
+const socketErrorLog = (...args) => {
+  if (!isProductionRuntime()) {
+    console.error(...args);
+  }
+};
 
 const normalizeUserId = (userId) =>
   userId === undefined || userId === null ? "" : userId.toString().trim();
@@ -18,6 +34,21 @@ const getHandshakeUserId = (socket) =>
       socket.handshake.headers?.userid ||
       socket.handshake.headers?.userId
   );
+
+const getHandshakeToken = (socket) => {
+  const authToken =
+    socket.handshake.auth?.token ||
+    socket.handshake.auth?.accessToken ||
+    socket.handshake.query?.token;
+  if (authToken) return authToken.toString();
+
+  const header = socket.handshake.headers?.authorization || "";
+  if (header.toString().startsWith("Bearer ")) {
+    return header.toString().slice(7).trim();
+  }
+
+  return "";
+};
 
 const addSocketForUser = (userId, socket) => {
   const key = normalizeUserId(userId);
@@ -53,41 +84,67 @@ const removeSocketForUser = (userId, socketId) => {
   return sockets.size;
 };
 
+const authenticateSocket = (socket, next) => {
+  const token = getHandshakeToken(socket);
+  if (!token) {
+    next(new Error("Socket authentication required"));
+    return;
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_ACCESS_SECRET);
+    const authenticatedUserId = normalizeUserId(decoded?._id);
+    const requestedUserId = getHandshakeUserId(socket);
+
+    if (!authenticatedUserId) {
+      next(new Error("Invalid socket token"));
+      return;
+    }
+
+    if (requestedUserId && requestedUserId !== authenticatedUserId) {
+      next(new Error("Socket user mismatch"));
+      return;
+    }
+
+    socket.data.userId = authenticatedUserId;
+    socket.data.role = decoded?.role || "";
+    next();
+  } catch {
+    next(new Error("Invalid socket token"));
+  }
+};
+
 export const initSocket = (httpServer) => {
   io = new Server(httpServer, {
     cors: {
-      origin: "*",
+      origin: corsOriginDelegate,
       methods: ["GET", "POST"],
       credentials: true,
     },
   });
 
-  io.on("connection", (socket) => {
-    const handshakeUserId = getHandshakeUserId(socket);
+  io.use(authenticateSocket);
 
-    if (handshakeUserId) {
-      const socketCount = addSocketForUser(handshakeUserId, socket);
-      console.log(
-        `Socket connected | userId=${handshakeUserId} socketId=${socket.id} sockets=${socketCount}`
-      );
-    } else {
-      console.log(`Socket connected without userId | socketId=${socket.id}`);
-    }
+  io.on("connection", (socket) => {
+    const socketCount = addSocketForUser(socket.data.userId, socket);
+    socketDebugLog(
+      `Socket connected | userId=${socket.data.userId} socketId=${socket.id} sockets=${socketCount}`
+    );
 
     socket.on("register", (payload = {}) => {
-      const userId = normalizeUserId(payload.userId);
-      if (!userId) return;
+      const requestedUserId = normalizeUserId(payload.userId);
+      if (requestedUserId && requestedUserId !== socket.data.userId) return;
 
-      const socketCount = addSocketForUser(userId, socket);
-      console.log(
-        `Socket registered | userId=${userId} socketId=${socket.id} sockets=${socketCount}`
+      const count = addSocketForUser(socket.data.userId, socket);
+      socketDebugLog(
+        `Socket registered | userId=${socket.data.userId} socketId=${socket.id} sockets=${count}`
       );
     });
 
     socket.on("ping", () => socket.emit("pong"));
 
     socket.on("chat_message", async (payload = {}, ack) => {
-      const senderId = normalizeUserId(payload.senderId || socket.data.userId);
+      const senderId = normalizeUserId(socket.data.userId);
       const recipientId = normalizeUserId(
         payload.recipientId || payload.providerId || payload.userId
       );
@@ -147,7 +204,7 @@ export const initSocket = (httpServer) => {
             createdAt: doc.createdAt.toISOString(),
           };
         } catch (error) {
-          console.error("Failed to persist chat message", error);
+          socketErrorLog("Failed to persist chat message", error?.message || error);
         }
       }
 
@@ -163,7 +220,7 @@ export const initSocket = (httpServer) => {
       const userId = socket.data.userId;
       if (userId) {
         const socketCount = removeSocketForUser(userId, socket.id);
-        console.log(
+        socketDebugLog(
           `Socket disconnected | userId=${userId} socketId=${socket.id} remaining=${socketCount} reason=${reason}`
         );
       }
@@ -185,9 +242,9 @@ export const emitToUser = (userId, event, data) => {
   const socketIds = connectedUsers.get(key);
   if (socketIds?.size) {
     socketIds.forEach((socketId) => io.to(socketId).emit(event, data));
-    console.log(`Emitted [${event}] -> userId=${key} sockets=${socketIds.size}`);
+    socketDebugLog(`Emitted [${event}] -> userId=${key} sockets=${socketIds.size}`);
   } else {
-    console.log(`[${event}] user ${key} is not connected via socket`);
+    socketDebugLog(`[${event}] user ${key} is not connected via socket`);
   }
 };
 
@@ -197,3 +254,4 @@ export const broadcast = (event, data) => {
 };
 
 export default { initSocket, getIO, emitToUser, broadcast };
+

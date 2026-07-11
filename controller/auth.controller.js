@@ -31,6 +31,44 @@ const getAuthResponseData = (user, accessToken, refreshToken) => ({
   _id: user._id,
 });
 
+const MAX_FAILED_LOGIN_ATTEMPTS = 5;
+const LOGIN_LOCK_WINDOW_MS = 15 * 60 * 1000;
+const loginAttemptStore = new Map();
+
+const getLoginAttempt = (email) => {
+  const attempt = loginAttemptStore.get(email);
+  if (!attempt) return { count: 0, firstFailedAt: Date.now() };
+
+  if (Date.now() - attempt.firstFailedAt > LOGIN_LOCK_WINDOW_MS) {
+    loginAttemptStore.delete(email);
+    return { count: 0, firstFailedAt: Date.now() };
+  }
+
+  return attempt;
+};
+
+const assertLoginNotLocked = (email) => {
+  const attempt = getLoginAttempt(email);
+  if (attempt.count >= MAX_FAILED_LOGIN_ATTEMPTS) {
+    throw new AppError(
+      429,
+      "Too many failed login attempts. Please try again after 15 minutes."
+    );
+  }
+};
+
+const recordFailedLogin = (email) => {
+  const attempt = getLoginAttempt(email);
+  loginAttemptStore.set(email, {
+    count: attempt.count + 1,
+    firstFailedAt: attempt.firstFailedAt || Date.now(),
+  });
+};
+
+const clearFailedLogin = (email) => {
+  loginAttemptStore.delete(email);
+};
+
 export const register = catchAsync(async (req, res) => {
   const { email, password, confirmPassword, role, firstName, lastName, name } = req.body;
   const normalizedEmail = normalizeEmail(email);
@@ -121,8 +159,11 @@ export const login = catchAsync(async (req, res) => {
     );
   }
 
+  assertLoginNotLocked(normalizedEmail);
+
   const user = await User.isUserExistsByEmail(normalizedEmail);
   if (!user) {
+    recordFailedLogin(normalizedEmail);
     throw new AppError(httpStatus.NOT_FOUND, "User not found");
   }
   if (normalizeEmail(user.email) !== normalizedEmail) {
@@ -132,8 +173,10 @@ export const login = catchAsync(async (req, res) => {
     );
   }
   if (!user.password || !(await User.isPasswordMatched(password, user.password))) {
+    recordFailedLogin(normalizedEmail);
     throw new AppError(httpStatus.FORBIDDEN, "Password is not correct");
   }
+  clearFailedLogin(normalizedEmail);
   if (!(await User.isOTPVerified(user._id))) {
     const otp = generateOTP();
     const jwtPayloadOTP = {
@@ -282,8 +325,6 @@ export const verifyOTP = catchAsync(async (req, res, next) => {
   if (!user) {
     return next(new AppError(404, "User not found"));
   }
-  console.log(user);
-  console.log("jasdjjsad", otp);
 
   if (
     !user.resetPasswordOTP ||
@@ -459,3 +500,5 @@ export const resendOTP = catchAsync(async (req, res) => {
     },
   });
 });
+
+

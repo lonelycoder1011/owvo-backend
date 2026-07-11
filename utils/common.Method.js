@@ -90,7 +90,7 @@ export const uploadOnCloudinary = async (
     if (options.deleteOnError !== false && filePath && fs.existsSync(filePath)) {
       fs.unlinkSync(filePath);
     }
-    console.error("Cloudinary upload error:", error);
+    console.error("Cloudinary upload error:", error?.message || error);
     throw error;
   }
 };

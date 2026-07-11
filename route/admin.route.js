@@ -43,6 +43,10 @@ import {
   updateUserAccountStatus,
 } from "../controller/admin.controller.js";
 import { protect, isAdmin, isDashboardUser, hasDashboardMenu } from "../middleware/auth.middleware.js";
+import {
+  getAdminDataRequests,
+  updateAdminDataRequest,
+} from "../controller/dataRequest.controller.js";
 
 const router = express.Router();
 
@@ -85,6 +89,8 @@ router.patch("/staff/:staffId/disable", protect, isAdmin, disableStaffAccount);
 router.delete("/staff/:staffId", protect, isAdmin, deleteStaffAccount);
 
 router.get("/activity-logs", protect, hasDashboardMenu("system-logs"), getActivityLogs);
+router.get("/data-requests", protect, hasDashboardMenu("data-requests"), getAdminDataRequests);
+router.patch("/data-requests/:requestId", protect, isAdmin, updateAdminDataRequest);
 
 router.get("/provider-verifications", protect, hasDashboardMenu("provider-verification"), getProviderVerificationQueue);
 router.patch("/providers/:providerId/verification", protect, isAdmin, updateProviderVerification);

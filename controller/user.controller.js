@@ -117,12 +117,21 @@ const localUploadReference = (file) => ({
   url: file.path ? `/${file.path.replace(/\\/g, "/")}` : "",
 });
 
+const requiresDurableUploadStorage = () =>
+  process.env.NODE_ENV === "production" || Boolean(process.env.RENDER);
+
 const uploadUserFile = async (file, folder) => {
   if (!file?.path) {
     throw new AppError(httpStatus.BAD_REQUEST, "No file uploaded");
   }
 
   if (!isCloudinaryConfigured()) {
+    if (requiresDurableUploadStorage()) {
+      throw new AppError(
+        httpStatus.INTERNAL_SERVER_ERROR,
+        "Secure document storage is not configured. Please contact OWVO support."
+      );
+    }
     return localUploadReference(file);
   }
 
@@ -132,8 +141,14 @@ const uploadUserFile = async (file, folder) => {
       deleteOnError: false,
     });
   } catch (error) {
+    if (requiresDurableUploadStorage()) {
+      throw new AppError(
+        httpStatus.BAD_GATEWAY,
+        "Secure document storage is temporarily unavailable. Please try again later."
+      );
+    }
     console.error(
-      `Cloudinary upload failed for ${file.fieldname || "file"}; using local upload reference.`,
+      `Cloudinary upload failed for ${file.fieldname || "file"}; using local development upload reference.`,
       error?.message || error
     );
     return localUploadReference(file);

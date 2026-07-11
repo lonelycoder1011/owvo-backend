@@ -28,14 +28,14 @@ import { protect } from "../middleware/auth.middleware.js";
 const router = express.Router();
 
 // ─── Public ───────────────────────────────────────────────────────────────────
-router.get("/", getAllWashers);
+router.get("/", protect, getAllWashers);
 
 /**
  * GET /api/v1/washers/nearby
  * Query: latitude, longitude, radius (metres, default 5000), serviceId (optional)
  * Returns online washers sorted by distance (nearest first) using 2dsphere index.
  */
-router.get("/nearby", getNearbyWashers);
+router.get("/nearby", protect, getNearbyWashers);
 
 // ─── Authenticated ────────────────────────────────────────────────────────────
 router.get("/status", protect, getWasherStatus);

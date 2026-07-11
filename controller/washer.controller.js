@@ -27,6 +27,17 @@ import sendResponse from "../utils/sendResponse.js";
 
 const WASHER_POLICY_VERSION = "2026-06-03";
 
+const approximateLocation = (location) => {
+  const coordinates = location?.coordinates;
+  if (!Array.isArray(coordinates) || coordinates.length < 2) return location;
+
+  const round = (value) => Math.round(Number(value) * 1000) / 1000;
+  return {
+    type: location.type || "Point",
+    coordinates: [round(coordinates[0]), round(coordinates[1])],
+  };
+};
+
 const hasAcceptedWasherPolicies = (washer) =>
   Boolean(
     washer?.policyAcceptance?.safetyGuidelinesAccepted &&
@@ -137,7 +148,7 @@ const toCustomerSocketPayload = (customer) => {
 
 export const getAllWashers = catchAsync(async (req, res) => {
   const washers = await User.find({ role: "provider" }).select(
-    "-password -refreshToken"
+    "_id name photo isOnline isBusy dailyWashLimit location preferredServices customerRatingAverage customerRatingCount"
   );
 
   sendResponse(res, {
@@ -998,14 +1009,12 @@ export const getNearbyWashers = catchAsync(async (req, res) => {
 
   const washers = await User.find(query)
     .select(
-      "_id name photo phoneNumber isOnline isBusy dailyWashLimit location providerAddress residentialAddress serviceArea preferredServices availability policyAcceptance"
+      "_id name photo isOnline isBusy dailyWashLimit location preferredServices availability"
     )
     .populate(
       "preferredServices",
       "catalogKey title price serviceType carSize carName carModel description isActive"
     );
-    console.log("Nearby washers query:", JSON.stringify(query));
-    console.log("Found washers:", washers);
   const availableWashers = washers.filter((washer) =>
     isProviderAvailableNow(washer)
   );
@@ -1076,7 +1085,13 @@ export const getNearbyWashers = catchAsync(async (req, res) => {
     };
 
     return {
-      ...washerData,
+      _id: washerData._id,
+      name: washerData.name,
+      photo: washerData.photo,
+      isOnline: washerData.isOnline,
+      isBusy: washerData.isBusy,
+      dailyWashLimit: washerData.dailyWashLimit,
+      location: approximateLocation(washerData.location),
       preferredServices,
       averageRating: rating.averageRating,
       totalRatings: rating.totalRatings,
@@ -1327,3 +1342,5 @@ export const getWeeklyIncomeProvider = catchAsync(async (req, res) => {
     },
   });
 });
+
+

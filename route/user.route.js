@@ -9,6 +9,11 @@ import {
   uploadIdentityIdFile,
   getUserActivity
 } from "../controller/user.controller.js";
+import {
+  createDataRequest,
+  deleteMyAccount,
+  getMyDataRequests,
+} from "../controller/dataRequest.controller.js";
 
 import { protect } from "../middleware/auth.middleware.js";
 import { upload } from "../middleware/upload.middleware.js"; 
@@ -40,6 +45,9 @@ router.put("/identity/upload-id",protect,upload.array("idFile", 5),uploadIdentit
 router.get("/bank", protect, getBankDetails);
 router.put("/bank", protect, updateBankDetails);
 router.get("/activity", protect, getUserActivity);
+router.post("/data-requests", protect, createDataRequest);
+router.get("/data-requests", protect, getMyDataRequests);
+router.delete("/account", protect, deleteMyAccount);
 
 
 export default router;
