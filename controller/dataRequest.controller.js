@@ -14,7 +14,6 @@ import { Receipt } from "../model/receipt.model.js";
 import { User } from "../model/user.model.js";
 import { UserRating } from "../model/userRating.model.js";
 import { Vehicle } from "../model/vehicle.model.js";
-import { WashHistory } from "../model/WashHistory.model.js";
 import catchAsync from "../utils/catch.Async.js";
 import sendResponse from "../utils/sendResponse.js";
 import { emitToUser } from "../socket/socket.js";
@@ -62,6 +61,41 @@ const removeUserLocalUploads = (user) => {
 
   urls.filter(Boolean).forEach(removeLocalUpload);
 };
+const personSelect = "_id name fullName email role phoneNumber photo";
+const serviceSelect = "_id title price serviceType carSize carName carModel";
+const vehicleSelect = "_id registrationNo make model year size image isDefault";
+
+const getRatingSnapshot = async (id, role) => {
+  const Model = role === "provider" ? Rating : UserRating;
+  const field = role === "provider" ? "provider" : "user";
+  const rows = await Model.aggregate([
+    { $match: { [field]: id } },
+    {
+      $group: {
+        _id: `$${field}`,
+        averageRating: { $avg: "$rating" },
+        totalRatings: { $sum: 1 },
+      },
+    },
+  ]);
+  const stat = rows[0] || { averageRating: 0, totalRatings: 0 };
+
+  return {
+    averageRating: Number((stat.averageRating || 0).toFixed(1)),
+    totalRatings: stat.totalRatings || 0,
+  };
+};
+
+const hydrateProfileForExport = async (profile, id) => {
+  if (!profile) return profile;
+
+  const ratingSnapshot = await getRatingSnapshot(id, profile.role);
+  return {
+    ...profile,
+    customerRatingAverage: ratingSnapshot.averageRating,
+    customerRatingCount: ratingSnapshot.totalRatings,
+  };
+};
 
 export const buildUserDataExport = async (userId) => {
   const id = toObjectId(userId);
@@ -81,30 +115,82 @@ export const buildUserDataExport = async (userId) => {
   ] = await Promise.all([
     User.findById(id)
       .select("-password -refreshToken -verificationInfo.token -password_reset_token")
+      .populate("preferredServices", serviceSelect)
+      .populate("adminVerification.reviewedBy", personSelect)
+      .populate("enforcement.updatedBy", personSelect)
       .lean(),
     Vehicle.find({ user: id }).sort({ createdAt: -1 }).lean(),
     Booking.find({ $or: [{ user: id }, { provider: id }] })
-      .populate("service", "_id title price serviceType carSize carName carModel")
+      .populate("user", personSelect)
+      .populate("provider", personSelect)
+      .populate("service", serviceSelect)
+      .populate("vehicle", vehicleSelect)
       .sort({ createdAt: -1 })
       .lean(),
-    paymentInfo.find({ $or: [{ userId: id }, { providerId: id }] }).sort({ createdAt: -1 }).lean(),
-    IssueReport.find({ $or: [{ reporter: id }, { reportedUser: id }] }).sort({ createdAt: -1 }).lean(),
+    paymentInfo.find({ $or: [{ userId: id }, { providerId: id }] })
+      .populate("userId", personSelect)
+      .populate("providerId", personSelect)
+      .populate("bookingId", "_id status finalPrice bookingDate completedAt currency")
+      .sort({ createdAt: -1 })
+      .lean(),
+    IssueReport.find({ $or: [{ reporter: id }, { reportedUser: id }] })
+      .populate("reporter", personSelect)
+      .populate("reportedUser", personSelect)
+      .populate("booking", "_id status finalPrice bookingDate completedAt currency")
+      .populate("assignedTo", personSelect)
+      .sort({ createdAt: -1 })
+      .lean(),
     ChatMessage.find({ $or: [{ sender: id }, { recipient: id }, { participants: id }] })
+      .populate("sender", personSelect)
+      .populate("recipient", personSelect)
+      .populate("participants", personSelect)
       .sort({ createdAt: -1 })
       .limit(500)
       .lean(),
-    Rating.find({ $or: [{ user: id }, { provider: id }] }).sort({ createdAt: -1 }).lean(),
-    UserRating.find({ $or: [{ user: id }, { provider: id }] }).sort({ createdAt: -1 }).lean(),
-    Receipt.find({ $or: [{ user: id }, { provider: id }] }).sort({ createdAt: -1 }).lean(),
-    WashHistory.find({ washer: id }).sort({ completedAt: -1 }).lean(),
-    ActivityLog.find({ actor: id }).sort({ createdAt: -1 }).limit(300).lean(),
+    Rating.find({ $or: [{ user: id }, { provider: id }] })
+      .populate("user", personSelect)
+      .populate("provider", personSelect)
+      .populate("booking", "_id status finalPrice bookingDate completedAt currency")
+      .sort({ createdAt: -1 })
+      .lean(),
+    UserRating.find({ $or: [{ user: id }, { provider: id }] })
+      .populate("user", personSelect)
+      .populate("provider", personSelect)
+      .populate("booking", "_id status finalPrice bookingDate completedAt currency")
+      .sort({ createdAt: -1 })
+      .lean(),
+    Receipt.find({ $or: [{ user: id }, { provider: id }] })
+      .populate("user", personSelect)
+      .populate("provider", personSelect)
+      .populate("service", serviceSelect)
+      .populate("booking", "_id status finalPrice bookingDate completedAt currency")
+      .sort({ createdAt: -1 })
+      .lean(),
+    Booking.find({ $or: [{ user: id }, { provider: id }], status: "completed" })
+      .populate("user", personSelect)
+      .populate("provider", personSelect)
+      .populate("service", serviceSelect)
+      .populate("vehicle", vehicleSelect)
+      .sort({ completedAt: -1, updatedAt: -1, bookingDate: -1 })
+      .lean(),
+    ActivityLog.find({ actor: id })
+      .populate("actor", personSelect)
+      .sort({ createdAt: -1 })
+      .limit(300)
+      .lean(),
   ]);
+
+  const hydratedProfile = await hydrateProfileForExport(profile, id);
+  const completedWashHistory = washHistory.map((booking) => ({
+    completedAt: booking.completedAt || booking.updatedAt || booking.bookingDate,
+    booking,
+  }));
 
   return {
     generatedAt: new Date(),
     retentionPolicy:
       "OWVO keeps operational account, booking, support, payment and verification records for up to 6 months unless a longer period is required by law, fraud prevention, dispute handling, tax, accounting, or safety obligations.",
-    profile,
+    profile: hydratedProfile,
     vehicles,
     bookings,
     payments,
@@ -113,7 +199,7 @@ export const buildUserDataExport = async (userId) => {
     providerRatings,
     customerRatings,
     receipts,
-    washHistory,
+    washHistory: completedWashHistory,
     activityLogs,
   };
 };
