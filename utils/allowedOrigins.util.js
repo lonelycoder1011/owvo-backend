@@ -10,6 +10,7 @@ const defaultDevelopmentOrigins = [
 const defaultProductionOrigins = [
   "https://owvo-backend.onrender.com",
   "https://owvo-dashboard.onrender.com",
+  "https://owvo-admin-dashboard.netlify.app",
 ];
 
 export const getAllowedOrigins = () => {
@@ -19,11 +20,11 @@ export const getAllowedOrigins = () => {
     .map((origin) => origin.trim())
     .filter(Boolean);
 
-  if (parsed.length) return parsed;
-
-  return process.env.NODE_ENV === "production" || process.env.RENDER
+  const defaults = process.env.NODE_ENV === "production" || process.env.RENDER
     ? defaultProductionOrigins
     : [...defaultDevelopmentOrigins, ...defaultProductionOrigins];
+
+  return [...new Set([...defaults, ...parsed])];
 };
 
 export const isAllowedOrigin = (origin) => {
@@ -39,3 +40,4 @@ export const corsOriginDelegate = (origin, callback) => {
 
   callback(new Error("Origin is not allowed by OWVO CORS policy"));
 };
+
