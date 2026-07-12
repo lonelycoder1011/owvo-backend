@@ -898,7 +898,16 @@ export const getUserActivity = catchAsync(async (req, res) => {
   const ongoingBooking =
     decoratedBookings.find((booking) => activeStatuses.has(booking.status)) ||
     null;
+  const getBookingActivityTime = (booking) => {
+    const value =
+      booking.completedAt || booking.updatedAt || booking.bookingDate || booking.createdAt;
+    const time = value ? new Date(value).getTime() : 0;
+    return Number.isNaN(time) ? 0 : time;
+  };
   const recentBookings = decoratedBookings.slice(0, 10);
+  const washHistory = decoratedBookings
+    .filter((booking) => booking.status?.toLowerCase?.() === "completed")
+    .sort((a, b) => getBookingActivityTime(b) - getBookingActivityTime(a));
 
   const providerHistory = new Map();
   decoratedBookings.forEach((booking) => {
@@ -945,8 +954,10 @@ export const getUserActivity = catchAsync(async (req, res) => {
     data: {
       ongoingBooking,
       recentBookings,
+      washHistory,
       providers: Array.from(providerHistory.values()),
       totalBookings: bookings.length,
+      totalCompletedWashes: washHistory.length,
     },
   });
 });
