@@ -3,7 +3,6 @@ import path from "path";
 import httpStatus from "http-status";
 import mongoose from "mongoose";
 import AppError from "../errors/AppError.js";
-import { ActivityLog } from "../model/activityLog.model.js";
 import { Booking } from "../model/booking.model.js";
 import { ChatMessage } from "../model/chatMessage.model.js";
 import { DataRequest } from "../model/dataRequest.model.js";
@@ -19,6 +18,7 @@ import sendResponse from "../utils/sendResponse.js";
 import { emitToUser } from "../socket/socket.js";
 
 const UPLOADS_ROOT = path.resolve(process.cwd(), "uploads");
+const DATA_EXPORT_SNAPSHOT_VERSION = "2026-07-13-readable-v1";
 
 const toObjectId = (value) =>
   value instanceof mongoose.Types.ObjectId
@@ -64,7 +64,14 @@ const removeUserLocalUploads = (user) => {
 const personSelect = "_id name fullName email role phoneNumber photo";
 const serviceSelect = "_id title price serviceType carSize carName carModel";
 const vehicleSelect = "_id registrationNo make model year size image isDefault";
-
+const bookingSelect =
+  "_id user provider service vehicle vehicleSnapshot price discountPrice finalPrice address postalCode bookingDate payment status cancellationReason cancelledBy cancelledAt isRated currency completedAt arrivedAt washEndsAt createdAt updatedAt";
+const bookingPopulate = [
+  { path: "user", select: personSelect },
+  { path: "provider", select: personSelect },
+  { path: "service", select: serviceSelect },
+  { path: "vehicle", select: vehicleSelect },
+];
 const getRatingSnapshot = async (id, role) => {
   const Model = role === "provider" ? Rating : UserRating;
   const field = role === "provider" ? "provider" : "user";
@@ -110,8 +117,6 @@ export const buildUserDataExport = async (userId) => {
     providerRatings,
     customerRatings,
     receipts,
-    washHistory,
-    activityLogs,
   ] = await Promise.all([
     User.findById(id)
       .select("-password -refreshToken -verificationInfo.token -password_reset_token")
@@ -121,26 +126,25 @@ export const buildUserDataExport = async (userId) => {
       .lean(),
     Vehicle.find({ user: id }).sort({ createdAt: -1 }).lean(),
     Booking.find({ $or: [{ user: id }, { provider: id }] })
-      .populate("user", personSelect)
-      .populate("provider", personSelect)
-      .populate("service", serviceSelect)
-      .populate("vehicle", vehicleSelect)
+      .populate(bookingPopulate)
       .sort({ createdAt: -1 })
       .lean(),
     paymentInfo.find({ $or: [{ userId: id }, { providerId: id }] })
       .populate("userId", personSelect)
       .populate("providerId", personSelect)
-      .populate("bookingId", "_id status finalPrice bookingDate completedAt currency")
+      .populate({ path: "bookingId", select: bookingSelect, populate: bookingPopulate })
       .sort({ createdAt: -1 })
       .lean(),
     IssueReport.find({ $or: [{ reporter: id }, { reportedUser: id }] })
       .populate("reporter", personSelect)
       .populate("reportedUser", personSelect)
-      .populate("booking", "_id status finalPrice bookingDate completedAt currency")
+      .populate({ path: "booking", select: bookingSelect, populate: bookingPopulate })
       .populate("assignedTo", personSelect)
+      .populate("updatedBy", personSelect)
       .sort({ createdAt: -1 })
       .lean(),
     ChatMessage.find({ $or: [{ sender: id }, { recipient: id }, { participants: id }] })
+      .populate({ path: "booking", select: bookingSelect, populate: bookingPopulate })
       .populate("sender", personSelect)
       .populate("recipient", personSelect)
       .populate("participants", personSelect)
@@ -150,44 +154,29 @@ export const buildUserDataExport = async (userId) => {
     Rating.find({ $or: [{ user: id }, { provider: id }] })
       .populate("user", personSelect)
       .populate("provider", personSelect)
-      .populate("booking", "_id status finalPrice bookingDate completedAt currency")
+      .populate({ path: "booking", select: bookingSelect, populate: bookingPopulate })
       .sort({ createdAt: -1 })
       .lean(),
     UserRating.find({ $or: [{ user: id }, { provider: id }] })
       .populate("user", personSelect)
       .populate("provider", personSelect)
-      .populate("booking", "_id status finalPrice bookingDate completedAt currency")
+      .populate({ path: "booking", select: bookingSelect, populate: bookingPopulate })
       .sort({ createdAt: -1 })
       .lean(),
     Receipt.find({ $or: [{ user: id }, { provider: id }] })
       .populate("user", personSelect)
       .populate("provider", personSelect)
       .populate("service", serviceSelect)
-      .populate("booking", "_id status finalPrice bookingDate completedAt currency")
+      .populate({ path: "booking", select: bookingSelect, populate: bookingPopulate })
       .sort({ createdAt: -1 })
-      .lean(),
-    Booking.find({ $or: [{ user: id }, { provider: id }], status: "completed" })
-      .populate("user", personSelect)
-      .populate("provider", personSelect)
-      .populate("service", serviceSelect)
-      .populate("vehicle", vehicleSelect)
-      .sort({ completedAt: -1, updatedAt: -1, bookingDate: -1 })
-      .lean(),
-    ActivityLog.find({ actor: id })
-      .populate("actor", personSelect)
-      .sort({ createdAt: -1 })
-      .limit(300)
       .lean(),
   ]);
 
   const hydratedProfile = await hydrateProfileForExport(profile, id);
-  const completedWashHistory = washHistory.map((booking) => ({
-    completedAt: booking.completedAt || booking.updatedAt || booking.bookingDate,
-    booking,
-  }));
 
   return {
     generatedAt: new Date(),
+    snapshotVersion: DATA_EXPORT_SNAPSHOT_VERSION,
     retentionPolicy:
       "OWVO keeps operational account, booking, support, payment and verification records for up to 6 months unless a longer period is required by law, fraud prevention, dispute handling, tax, accounting, or safety obligations.",
     profile: hydratedProfile,
@@ -199,9 +188,19 @@ export const buildUserDataExport = async (userId) => {
     providerRatings,
     customerRatings,
     receipts,
-    washHistory: completedWashHistory,
-    activityLogs,
   };
+};
+
+const ensureReadableExportSnapshot = async (request) => {
+  if (!request || request.status !== "approved") return request;
+  if (request.exportData?.snapshotVersion === DATA_EXPORT_SNAPSHOT_VERSION) {
+    return request;
+  }
+
+  request.exportData = await buildUserDataExport(request.user);
+  request.exportGeneratedAt = new Date();
+  await request.save();
+  return request;
 };
 
 export const createDataRequest = catchAsync(async (req, res) => {
@@ -215,6 +214,12 @@ export const createDataRequest = catchAsync(async (req, res) => {
   });
 
   if (existingPending) {
+    if (!existingPending.exportData || existingPending.exportData.snapshotVersion !== DATA_EXPORT_SNAPSHOT_VERSION) {
+      existingPending.exportData = await buildUserDataExport(req.user._id);
+      existingPending.exportGeneratedAt = existingPending.exportGeneratedAt || new Date();
+      await existingPending.save();
+    }
+
     return sendResponse(res, {
       statusCode: httpStatus.OK,
       success: true,
@@ -223,10 +228,13 @@ export const createDataRequest = catchAsync(async (req, res) => {
     });
   }
 
+  const exportData = await buildUserDataExport(req.user._id);
   const request = await DataRequest.create({
     user: req.user._id,
     requesterRole: req.user.role,
     requestNote: req.body?.requestNote?.toString().trim() || "",
+    exportData,
+    exportGeneratedAt: new Date(),
   });
 
   sendResponse(res, {
@@ -241,12 +249,15 @@ export const getMyDataRequests = catchAsync(async (req, res) => {
   const requests = await DataRequest.find({ user: req.user._id })
     .sort({ createdAt: -1 })
     .limit(20);
+  const repairedRequests = await Promise.all(
+    requests.map(ensureReadableExportSnapshot)
+  );
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Data requests fetched successfully.",
-    data: requests.map(compactRequest),
+    data: repairedRequests.map(compactRequest),
   });
 });
 
@@ -257,17 +268,22 @@ export const getAdminDataRequests = catchAsync(async (req, res) => {
     : {};
 
   const requests = await DataRequest.find(filter)
-    .populate("user", "_id name email role phoneNumber photo accountStatus")
-    .populate("reviewedBy", "_id name email role")
     .sort({ createdAt: -1 })
-    .limit(200)
-    .lean();
+    .limit(200);
+  const repairedRequests = await Promise.all(
+    requests.map(ensureReadableExportSnapshot)
+  );
+  await DataRequest.populate(repairedRequests, [
+    { path: "user", select: "_id name email role phoneNumber photo accountStatus" },
+    { path: "reviewedBy", select: "_id name email role" },
+  ]);
+  const data = repairedRequests.map((request) => request.toObject());
 
   sendResponse(res, {
     statusCode: httpStatus.OK,
     success: true,
     message: "Data requests fetched successfully.",
-    data: requests,
+    data,
   });
 });
 
@@ -294,8 +310,12 @@ export const updateAdminDataRequest = catchAsync(async (req, res) => {
   request.reviewedAt = new Date();
 
   if (status === "approved") {
-    request.exportData = await buildUserDataExport(request.user);
-    request.exportGeneratedAt = new Date();
+    if (!request.exportData || request.exportData.snapshotVersion !== DATA_EXPORT_SNAPSHOT_VERSION) {
+      request.exportData = await buildUserDataExport(request.user);
+      request.exportGeneratedAt = new Date();
+    } else if (!request.exportGeneratedAt) {
+      request.exportGeneratedAt = request.createdAt || new Date();
+    }
   } else {
     request.exportData = null;
     request.exportGeneratedAt = null;
