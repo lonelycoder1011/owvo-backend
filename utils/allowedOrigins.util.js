@@ -8,7 +8,7 @@ const defaultDevelopmentOrigins = [
 ];
 
 const defaultProductionOrigins = [
-  "https://owvo-backend.onrender.com",
+  "https://owvo-backend-new.onrender.com",
   "https://owvo-dashboard.onrender.com",
   "https://owvo-admin-dashboard.netlify.app",
 ];
