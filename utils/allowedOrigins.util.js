@@ -11,6 +11,7 @@ const defaultProductionOrigins = [
   "https://owvo-backend-new.onrender.com",
   "https://owvo-dashboard.onrender.com",
   "https://owvo-admin-dashboard.netlify.app",
+  "https://owvo-dashboard.netlify.app",
 ];
 
 export const getAllowedOrigins = () => {
